@@ -125,7 +125,7 @@ fn client_connected(
         .compat()
         .try_for_each(move |raw_msg| {
             if active_responses.len() > REQUEST_GC_THRESHOLD {
-                active_responses.retain(|_, canceled| canceled.load(Ordering::SeqCst));
+                active_responses.retain(|_, canceled| !canceled.load(Ordering::SeqCst));
             }
 
             // Do some parsing first...
