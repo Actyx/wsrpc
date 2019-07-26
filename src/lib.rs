@@ -1,5 +1,4 @@
 extern crate bytes;
-extern crate chashmap;
 extern crate futures;
 extern crate futures01;
 extern crate log;
@@ -23,14 +22,16 @@ use log::*;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::executor::DefaultExecutor;
 use warp::filters::ws::{Message, WebSocket, Ws2};
 use warp::{Filter, Rejection};
 
 const WS_SEND_BUFFER_SIZE: usize = 1024;
+const REQUEST_GC_THRESHOLD: usize = 64;
 
 pub trait Service {
     type Req: DeserializeOwned;
@@ -106,6 +107,12 @@ fn client_connected(
     // Create an MPSC channel to merge outbound WS messages
     let (mut mux_in, mux_out) = mpsc::channel::<Result<Message, warp::Error>>(WS_SEND_BUFFER_SIZE);
 
+    // Map of request IDs to the reference counted boolean that will terminate the response
+    // stream upon cancellation. There is no need for a concurrent map because we simply share
+    // the entries with the running streams. This also means that the running response stream
+    // does not need to actually look up the entry every time.
+    let mut active_responses: HashMap<ReqId, Arc<AtomicBool>> = HashMap::new();
+
     let mut executor = DefaultExecutor::current().compat();
 
     // Pipe the merged stream into the websocket output;
@@ -117,6 +124,10 @@ fn client_connected(
     ws_in
         .compat()
         .try_for_each(move |raw_msg| {
+            if active_responses.len() > REQUEST_GC_THRESHOLD {
+                active_responses.retain(|_, canceled| canceled.load(Ordering::SeqCst));
+            }
+
             // Do some parsing first...
             if let Ok(text_msg) = raw_msg.to_str() {
                 if let Ok(req_env) = serde_json::from_str::<Incoming>(text_msg) {
@@ -124,8 +135,17 @@ fn client_connected(
                         Incoming::Request(body) => {
                             // Locate the service matching the request
                             if let Some(srv) = services.get(body.service_id) {
+                                // Set up cancellation signal
+                                let canceled = Arc::new(AtomicBool::new(false));
+                                active_responses.insert(body.request_id, canceled.clone());
                                 executor
-                                    .spawn(serve_request(srv, body.request_id, body.payload, mux_in.clone()))
+                                    .spawn(serve_request(
+                                        canceled,
+                                        srv,
+                                        body.request_id,
+                                        body.payload,
+                                        mux_in.clone(),
+                                    ))
                                     .expect("Could not spawn response stream task into executor");
                             } else {
                                 executor
@@ -140,7 +160,11 @@ fn client_connected(
                                 warn!("Client tried to access unknown service: {}", body.service_id);
                             }
                         }
-                        Incoming::Cancel { .. } => {} // TODO:
+                        Incoming::Cancel { request_id } => {
+                            if let Some(canceled) = active_responses.remove(&request_id) {
+                                canceled.store(true, Ordering::SeqCst);
+                            }
+                        }
                     }
                 } else {
                     error!("Could not deserialize client request {}", text_msg);
@@ -188,12 +212,14 @@ fn serve_request_stream(
 }
 
 fn serve_request(
+    canceled: Arc<AtomicBool>,
     srv: &BoxedService,
     req_id: ReqId,
     payload: Value,
     output: impl Sink<Result<Message, warp::Error>>,
 ) -> impl Future<Output = ()> {
     serve_request_stream(srv, req_id, payload)
+        .take_while(move |_| future::ready(!canceled.load(Ordering::SeqCst)))
         .map(|err| {
             // We need to re-wrap in an outer result because Sink requires SinkError as the error type
             // but it will pass our inner error unmodified
