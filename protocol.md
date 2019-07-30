@@ -19,6 +19,8 @@ The `type` field indicates that this is an API request, the `serviceId` field in
 will bear the `requestId` of 652. Finally, the `payload` field contains the JSON formatted message that is to be
 parsed by the particular service, in this case `getCustomerIds`.
 
+If the `requestId` was already used by a previous request, then that request is implicitly cancelled.
+
 On a successful call, the backend will respond with a stream of messages:
 
 ```json
@@ -62,7 +64,7 @@ In the case the client sends a request to a non-existing service, for example:
 {"type":"request","serviceId":"getCustomerIdsWrong","requestId":652,"payload":{ ... }}
 ```
 
-The server responds with an error of `unknonwnEndpoint`:
+The server responds with an error of `unknownEndpoint`:
 
 ```json
 {"type":"error","requestId":652,"kind":{"type":"unknownEndpoint","endpoint":"getCustomerIdsWrong"}}

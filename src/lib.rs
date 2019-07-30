@@ -97,7 +97,6 @@ pub fn serve(services: Vec<BoxedService>) -> impl Filter<Extract = (impl warp::R
     })
 }
 
-// TODO: Cancel previous requests
 fn client_connected(
     ws: WebSocket,
     services: Arc<BTreeMap<String, BoxedService>>,
@@ -137,7 +136,11 @@ fn client_connected(
                             if let Some(srv) = services.get(body.service_id) {
                                 // Set up cancellation signal
                                 let canceled = Arc::new(AtomicBool::new(false));
-                                active_responses.insert(body.request_id, canceled.clone());
+
+                                if let Some(previous) = active_responses.insert(body.request_id, canceled.clone()) {
+                                    previous.store(true, Ordering::SeqCst);
+                                };
+
                                 executor
                                     .spawn(serve_request(
                                         canceled,
@@ -367,7 +370,7 @@ mod tests {
                     completion = Some(env.clone());
                     false
                 }
-            }) // if let Outgoing::Next { .. } = env { true } else { false })
+            })
             .filter_map(|env| {
                 if let Outgoing::Next { payload, .. } = env {
                     Some(serde_json::from_value::<Resp>(payload).expect("Could not deserialize response"))
