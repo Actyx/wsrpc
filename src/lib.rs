@@ -69,6 +69,7 @@ where
     }
 
     fn serve_ws(&self, raw_req: Value) -> BoxStream<'static, Result<Value, ErrorKind>> {
+        trace!("Serving raw request for service {}: {:?}", self.id(), raw_req);
         if let Ok(req) = serde_json::from_value(raw_req) {
             self.serve(req)
                 .map(|resp_result| {
