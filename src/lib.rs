@@ -27,11 +27,13 @@ use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::executor::DefaultExecutor;
+use util::yield_after::yield_after;
 use warp::filters::ws::{Message, WebSocket, Ws2};
 use warp::{Filter, Rejection};
 
 const WS_SEND_BUFFER_SIZE: usize = 1024;
 const REQUEST_GC_THRESHOLD: usize = 64;
+const INTER_STREAM_FAIRNESS: u64 = 64;
 
 pub trait Service {
     type Req: DeserializeOwned;
@@ -221,13 +223,15 @@ fn serve_request(
     payload: Value,
     output: impl Sink<Result<Message, warp::Error>>,
 ) -> impl Future<Output = ()> {
-    serve_request_stream(srv, req_id, payload)
+    let response_stream = serve_request_stream(srv, req_id, payload)
         .take_while(move |_| future::ready(!canceled.load(Ordering::SeqCst)))
         .map(|err| {
             // We need to re-wrap in an outer result because Sink requires SinkError as the error type
             // but it will pass our inner error unmodified
             Ok(err)
-        })
+        });
+
+    yield_after(response_stream, INTER_STREAM_FAIRNESS)
         .forward(output)
         .map(|result| {
             if result.is_err() {
