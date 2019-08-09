@@ -118,7 +118,6 @@ fn client_connected(
     let mut executor = DefaultExecutor::current().compat();
 
     // Pipe the merged stream into the websocket output;
-    // TODO: log the error here
     executor
         .spawn(mux_out.compat().forward(ws_out).compat().map(|_| ()))
         .expect("Could not spawn multiplex task into executor");
