@@ -175,6 +175,10 @@ fn client_connected(
                     error!("Could not deserialize client request {}", text_msg);
                     mux_in.close_channel();
                 }
+            } else if raw_msg.is_ping() {
+                // No way to send pong??
+            } else if raw_msg.is_close() {
+                mux_in.close_channel();
             } else {
                 error!("Expected TEXT Websocket message but got binary");
                 mux_in.close_channel();
