@@ -1,10 +1,11 @@
 extern crate bytes;
 extern crate futures;
 extern crate futures01;
-extern crate log;
 extern crate serde;
 extern crate serde_json;
 extern crate tokio;
+extern crate tracing;
+extern crate tracing_futures;
 extern crate warp;
 
 mod formats;
@@ -18,7 +19,6 @@ use futures::task::SpawnExt;
 use futures::{future, Future, Sink};
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use futures01::{Future as Future01, Stream as Stream01};
-use log::*;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
@@ -27,6 +27,7 @@ use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::executor::DefaultExecutor;
+use tracing::*;
 use util::yield_after::yield_after;
 use warp::filters::ws::{Message, WebSocket, Ws2};
 use warp::{Filter, Rejection};
