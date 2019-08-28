@@ -526,5 +526,4 @@ mod tests {
     }
 
     // Handle service panic
-
 }
