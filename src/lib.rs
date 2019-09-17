@@ -120,7 +120,7 @@ fn client_connected(
 
     // Pipe the merged stream into the websocket output;
     executor
-        .spawn(mux_out.compat().forward(ws_out).compat().map(|_| ()))
+        .spawn(mux_out.fuse().compat().forward(ws_out).compat().map(|_| ()))
         .expect("Could not spawn multiplex task into executor");
 
     ws_in
