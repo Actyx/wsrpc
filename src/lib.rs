@@ -221,12 +221,12 @@ fn serve_request_stream(
         .map(|env| Ok(Message::text(serde_json::to_string(&env).unwrap())))
 }
 
-fn serve_request(
+fn serve_request<T: std::fmt::Debug>(
     canceled: Arc<AtomicBool>,
     srv: &BoxedService,
     req_id: ReqId,
     payload: Value,
-    output: impl Sink<Result<Message, warp::Error>>,
+    output: impl Sink<Result<Message, warp::Error>, Error = T>,
 ) -> impl Future<Output = ()> {
     let response_stream = serve_request_stream(srv, req_id, payload)
         .take_while(move |_| future::ready(!canceled.load(Ordering::SeqCst)))
@@ -239,8 +239,8 @@ fn serve_request(
     yield_after(response_stream, INTER_STREAM_FAIRNESS)
         .forward(output)
         .map(|result| {
-            if result.is_err() {
-                error!("Multiplexing error");
+            if let Err(cause) = result {
+                error!("Multiplexing error {:?}", cause);
             };
         })
 }
