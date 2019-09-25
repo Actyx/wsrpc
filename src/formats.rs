@@ -36,10 +36,17 @@ pub enum Outgoing {
 #[serde(tag = "type")]
 #[serde(rename_all = "camelCase")]
 pub enum ErrorKind {
-    UnknownEndpoint { endpoint: String },
+    UnknownEndpoint {
+        endpoint: String,
+        valid_endpoints: Vec<String>,
+    },
     InternalError,
-    BadRequest,
-    ServiceError { value: Value },
+    BadRequest {
+        message: String,
+    },
+    ServiceError {
+        value: Value,
+    },
 }
 
 impl Outgoing {
