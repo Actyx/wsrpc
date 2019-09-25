@@ -486,7 +486,7 @@ mod tests {
         {
             assert!(message.starts_with("unknown variant"));
         } else {
-            assert!(false);
+            panic!();
         }
 
         rt.shutdown_now();
