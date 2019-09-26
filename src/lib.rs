@@ -71,8 +71,9 @@ where
 
     fn serve_ws(&self, raw_req: Value) -> BoxStream<'static, Result<Value, ErrorKind>> {
         trace!("Serving raw request for service {}: {:?}", self.id(), raw_req);
-        if let Ok(req) = serde_json::from_value(raw_req) {
-            self.serve(req)
+        match serde_json::from_value(raw_req) {
+            Ok(req) => self
+                .serve(req)
                 .map(|resp_result| {
                     resp_result
                         .map(|resp| serde_json::to_value(&resp).expect("Could not serialize service response"))
@@ -80,10 +81,12 @@ where
                             value: serde_json::to_value(&err).expect("Could not serialize service error response"),
                         })
                 })
-                .boxed()
-        } else {
-            warn!("Error deserializing request for service {}", self.id());
-            stream::once(future::err(ErrorKind::BadRequest)).boxed()
+                .boxed(),
+            Err(cause) => {
+                let message = format!("{}", cause);
+                warn!("Error deserializing request for service {}: {}", self.id(), message);
+                stream::once(future::err(ErrorKind::BadRequest { message })).boxed()
+            }
         }
     }
 }
@@ -132,8 +135,8 @@ fn client_connected(
 
             // Do some parsing first...
             if let Ok(text_msg) = raw_msg.to_str() {
-                if let Ok(req_env) = serde_json::from_str::<Incoming>(text_msg) {
-                    match req_env {
+                match serde_json::from_str::<Incoming>(text_msg) {
+                    Ok(req_env) => match req_env {
                         Incoming::Request(body) => {
                             // Locate the service matching the request
                             if let Some(srv) = services.get(body.service_id) {
@@ -159,6 +162,7 @@ fn client_connected(
                                         body.request_id,
                                         ErrorKind::UnknownEndpoint {
                                             endpoint: body.service_id.to_string(),
+                                            valid_endpoints: services.keys().cloned().collect::<Vec<String>>(),
                                         },
                                         mux_in.clone(),
                                     ))
@@ -171,10 +175,11 @@ fn client_connected(
                                 canceled.store(true, Ordering::SeqCst);
                             }
                         }
+                    },
+                    Err(cause) => {
+                        error!("Could not deserialize client request {}: {}", text_msg, cause);
+                        mux_in.close_channel();
                     }
-                } else {
-                    error!("Could not deserialize client request {}", text_msg);
-                    mux_in.close_channel();
                 }
             } else if raw_msg.is_ping() {
                 // No way to send pong??
@@ -450,7 +455,8 @@ mod tests {
             Outgoing::Error {
                 request_id: ReqId(49),
                 kind: ErrorKind::UnknownEndpoint {
-                    endpoint: "no_such_service".to_string()
+                    endpoint: "no_such_service".to_string(),
+                    valid_endpoints: vec!["test".to_string()],
                 }
             }
         );
@@ -473,13 +479,15 @@ mod tests {
 
         assert_eq!(msgs, vec![]);
 
-        assert_eq!(
-            completion,
-            Outgoing::Error {
-                request_id: ReqId(49),
-                kind: ErrorKind::BadRequest,
-            }
-        );
+        if let Outgoing::Error {
+            request_id: ReqId(49),
+            kind: ErrorKind::BadRequest { message },
+        } = completion
+        {
+            assert!(message.starts_with("unknown variant"));
+        } else {
+            panic!();
+        }
 
         rt.shutdown_now();
     }
