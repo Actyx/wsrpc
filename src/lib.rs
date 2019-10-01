@@ -288,10 +288,12 @@ mod tests {
         Fail(String), // Fails the service normally with given reason
         Panic,        // Panics the service
     }
+
     #[derive(Serialize, Deserialize)]
     struct BadRequest {
         bad_field: String,
     }
+
     #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
     struct Response(u64);
 
