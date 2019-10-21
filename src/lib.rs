@@ -104,6 +104,7 @@ pub fn serve(services: Vec<BoxedService>) -> impl Filter<Extract = (impl warp::R
     })
 }
 
+#[allow(clippy::cognitive_complexity)]
 fn client_connected(
     ws: WebSocket,
     services: Arc<BTreeMap<String, BoxedService>>,
