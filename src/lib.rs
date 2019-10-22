@@ -260,7 +260,7 @@ fn serve_error(
         kind: error_kind,
     };
 
-    let raw_msg = Message::text(serde_json::to_string(&msg).unwrap());
+    let raw_msg = Message::text(serde_json::to_string_pretty(&msg).unwrap());
 
     stream::once(future::ok(Ok(raw_msg))).forward(output).map(|result| {
         if result.is_err() {
