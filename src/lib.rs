@@ -120,7 +120,7 @@ fn client_connected(
     // does not need to actually look up the entry every time.
     let mut active_responses: HashMap<ReqId, Arc<AtomicBool>> = HashMap::new();
 
-    let mut executor = DefaultExecutor::current().compat();
+    let executor = DefaultExecutor::current().compat();
 
     // Pipe the merged stream into the websocket output;
     executor
@@ -274,9 +274,10 @@ fn serve_error(
 mod tests {
     use super::*;
     use crate::Service;
+    use futures::stream;
     use futures::stream::BoxStream;
     use futures::stream::StreamExt;
-    use futures::{stream, Poll};
+    use futures::task::Poll;
     use serde::{Deserialize, Serialize};
     use std::net::SocketAddr;
     use std::thread::JoinHandle;
