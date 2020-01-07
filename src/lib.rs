@@ -179,16 +179,17 @@ fn client_connected(
                     },
                     Err(cause) => {
                         error!("Could not deserialize client request {}: {}", text_msg, cause);
-                        mux_in.close_channel();
+                        cancel_response_streams_close_channel(&mut active_responses, &mut mux_in);
                     }
                 }
             } else if raw_msg.is_ping() {
                 // No way to send pong??
             } else if raw_msg.is_close() {
-                mux_in.close_channel();
+                info!("Closing websocket connection (client disconnected)");
+                cancel_response_streams_close_channel(&mut active_responses, &mut mux_in);
             } else {
                 error!("Expected TEXT Websocket message but got binary");
-                mux_in.close_channel();
+                cancel_response_streams_close_channel(&mut active_responses, &mut mux_in);
             };
             future::ok(())
         })
@@ -196,6 +197,16 @@ fn client_connected(
             error!("Websocket closed with error {}", err);
         })
         .compat()
+}
+
+fn cancel_response_streams_close_channel(
+    active_responses: &mut HashMap<ReqId, Arc<AtomicBool>>,
+    mux_in: &mut mpsc::Sender<Result<Message, warp::Error>>,
+) {
+    for canceled in active_responses.values_mut() {
+        canceled.store(true, Ordering::SeqCst);
+    }
+    mux_in.close_channel();
 }
 
 fn serve_request_stream(
