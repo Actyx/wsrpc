@@ -11,7 +11,7 @@ extern crate warp;
 mod formats;
 
 use formats::*;
-use futures::channel::mpsc;
+use futures::channel::{mpsc, oneshot};
 use futures::compat::{Executor01CompatExt, Future01CompatExt, Stream01CompatExt};
 use futures::stream;
 use futures::stream::BoxStream;
@@ -24,7 +24,6 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::executor::DefaultExecutor;
 use tracing::*;
@@ -118,7 +117,7 @@ fn client_connected(
     // stream upon cancellation. There is no need for a concurrent map because we simply share
     // the entries with the running streams. This also means that the running response stream
     // does not need to actually look up the entry every time.
-    let mut active_responses: HashMap<ReqId, Arc<AtomicBool>> = HashMap::new();
+    let mut active_responses: HashMap<ReqId, oneshot::Sender<()>> = HashMap::new();
 
     let executor = DefaultExecutor::current().compat();
 
@@ -131,7 +130,7 @@ fn client_connected(
         .compat()
         .try_for_each(move |raw_msg| {
             if active_responses.len() > REQUEST_GC_THRESHOLD {
-                active_responses.retain(|_, canceled| !canceled.load(Ordering::SeqCst));
+                active_responses.retain(|_, canceled| !canceled.is_canceled());
             }
 
             // Do some parsing first...
@@ -142,15 +141,15 @@ fn client_connected(
                             // Locate the service matching the request
                             if let Some(srv) = services.get(body.service_id) {
                                 // Set up cancellation signal
-                                let canceled = Arc::new(AtomicBool::new(false));
+                                let (snd_cancel, rcv_cancel) = oneshot::channel();
 
-                                if let Some(previous) = active_responses.insert(body.request_id, canceled.clone()) {
-                                    previous.store(true, Ordering::SeqCst);
+                                if let Some(previous) = active_responses.insert(body.request_id, snd_cancel) {
+                                    cancel_response_stream(previous);
                                 };
 
                                 executor
                                     .spawn(serve_request(
-                                        canceled,
+                                        rcv_cancel,
                                         srv,
                                         body.request_id,
                                         body.payload,
@@ -172,8 +171,8 @@ fn client_connected(
                             }
                         }
                         Incoming::Cancel { request_id } => {
-                            if let Some(canceled) = active_responses.remove(&request_id) {
-                                canceled.store(true, Ordering::SeqCst);
+                            if let Some(snd_cancel) = active_responses.remove(&request_id) {
+                                cancel_response_stream(snd_cancel);
                             }
                         }
                     },
@@ -199,12 +198,19 @@ fn client_connected(
         .compat()
 }
 
+fn cancel_response_stream(snd_cancel: oneshot::Sender<()>) {
+    match snd_cancel.send(()) {
+        Ok(_) => debug!("Merged Cancel signal into ongoing response stream"),
+        Err(_) => debug!("Response stream we are trying to stop has already stopped"),
+    }
+}
+
 fn cancel_response_streams_close_channel(
-    active_responses: &mut HashMap<ReqId, Arc<AtomicBool>>,
+    active_responses: &mut HashMap<ReqId, oneshot::Sender<()>>,
     mux_in: &mut mpsc::Sender<Result<Message, warp::Error>>,
 ) {
-    for canceled in active_responses.values_mut() {
-        canceled.store(true, Ordering::SeqCst);
+    for (_, snd_cancel) in active_responses.drain() {
+        cancel_response_stream(snd_cancel);
     }
     mux_in.close_channel();
 }
@@ -238,20 +244,41 @@ fn serve_request_stream(
         .map(|env| Ok(Message::text(serde_json::to_string(&env).unwrap())))
 }
 
+enum ValueOrCancel<T> {
+    Value(T),
+    Cancel,
+}
+
 fn serve_request<T: std::fmt::Debug>(
-    canceled: Arc<AtomicBool>,
+    canceled: oneshot::Receiver<()>,
     srv: &BoxedService,
     req_id: ReqId,
     payload: Value,
     output: impl Sink<Result<Message, warp::Error>, Error = T>,
 ) -> impl Future<Output = ()> {
-    let response_stream = serve_request_stream(srv, req_id, payload)
-        .take_while(move |_| future::ready(!canceled.load(Ordering::SeqCst)))
-        .map(|err| {
+    let response_stream = stream::select_all(vec![
+        serve_request_stream(srv, req_id, payload)
+            .map(ValueOrCancel::Value)
+            .left_stream(),
+        stream::once(canceled).map(|_| ValueOrCancel::Cancel).right_stream(),
+    ])
+    .take_while(|v| match v {
+        ValueOrCancel::Cancel => {
+            trace!("Received Cancel signal, stopping active response stream");
+            future::ready(false)
+        }
+        _ => future::ready(true),
+    })
+    .map(|item| {
+        if let ValueOrCancel::Value(t) = item {
             // We need to re-wrap in an outer result because Sink requires SinkError as the error type
             // but it will pass our inner error unmodified
-            Ok(err)
-        });
+            Ok(t)
+        } else {
+            // take_while removes all Cancels
+            unreachable!()
+        }
+    });
 
     yield_after(response_stream, INTER_STREAM_FAIRNESS)
         .forward(output)
