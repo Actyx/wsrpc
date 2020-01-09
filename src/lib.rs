@@ -28,6 +28,7 @@ use std::sync::Arc;
 use tokio::executor::DefaultExecutor;
 use tracing::*;
 use util::yield_after::yield_after;
+use util::StreamUtil;
 use warp::filters::ws::{Message, WebSocket, Ws2};
 use warp::{Filter, Rejection};
 
@@ -198,10 +199,18 @@ fn client_connected(
         .compat()
 }
 
+// Wtf, clippy?
+#[allow(clippy::cognitive_complexity)]
 fn cancel_response_stream(snd_cancel: oneshot::Sender<()>) {
-    match snd_cancel.send(()) {
-        Ok(_) => debug!("Merged Cancel signal into ongoing response stream"),
-        Err(_) => debug!("Response stream we are trying to stop has already stopped"),
+    if snd_cancel.is_canceled() {
+        trace!("Not trying to cancel response stream whose cancel rcv has already dropped")
+    } else {
+        // Let it be said that we could just as well just drop the Sender here,
+        // which would also signal the Receiver (with a 'Cancel' error).
+        match snd_cancel.send(()) {
+            Ok(_) => debug!("Merged Cancel signal into ongoing response stream"),
+            Err(_) => debug!("Response stream we are trying to stop has already stopped"),
+        }
     }
 }
 
@@ -244,11 +253,6 @@ fn serve_request_stream(
         .map(|env| Ok(Message::text(serde_json::to_string(&env).unwrap())))
 }
 
-enum ValueOrCancel<T> {
-    Value(T),
-    Cancel,
-}
-
 fn serve_request<T: std::fmt::Debug>(
     canceled: oneshot::Receiver<()>,
     srv: &BoxedService,
@@ -256,29 +260,13 @@ fn serve_request<T: std::fmt::Debug>(
     payload: Value,
     output: impl Sink<Result<Message, warp::Error>, Error = T>,
 ) -> impl Future<Output = ()> {
-    let response_stream = stream::select_all(vec![
-        serve_request_stream(srv, req_id, payload)
-            .map(ValueOrCancel::Value)
-            .left_stream(),
-        stream::once(canceled).map(|_| ValueOrCancel::Cancel).right_stream(),
-    ])
-    .take_while(|v| match v {
-        ValueOrCancel::Cancel => {
-            trace!("Received Cancel signal, stopping active response stream");
-            future::ready(false)
-        }
-        _ => future::ready(true),
-    })
-    .map(|item| {
-        if let ValueOrCancel::Value(t) = item {
+    let response_stream = serve_request_stream(srv, req_id, payload)
+        .take_until_signaled(canceled)
+        .map(|item| {
             // We need to re-wrap in an outer result because Sink requires SinkError as the error type
             // but it will pass our inner error unmodified
-            Ok(t)
-        } else {
-            // take_while removes all Cancels
-            unreachable!()
-        }
-    });
+            Ok(item)
+        });
 
     yield_after(response_stream, INTER_STREAM_FAIRNESS)
         .forward(output)
