@@ -313,6 +313,7 @@ mod tests {
     #[derive(Serialize, Deserialize)]
     enum Request {
         Count(u64),   // Returns numbers 0..N
+        Size(String), // returns data size
         Fail(String), // Fails the service normally with given reason
         Panic,        // Panics the service
     }
@@ -357,6 +358,7 @@ mod tests {
                     })
                     .boxed()
                 }
+                Request::Size(data) => stream::once(future::ok(Response(data.len() as u64))).boxed(),
                 Request::Fail(reason) => stream::once(future::err(reason)).boxed(),
                 Request::Panic => stream::poll_fn(|_| panic!("Test panic")).boxed(),
             }
@@ -442,6 +444,19 @@ mod tests {
         assert_eq!(
             test_client::<Request, Response>(addr, "test", 0, Request::Count(5)).0,
             vec![Response(0), Response(1), Response(2), Response(3), Response(4)]
+        );
+        rt.shutdown_now();
+    }
+
+    #[test]
+    fn properly_serve_large_request() {
+        let (addr, rt) = start_test_service();
+        let len = 20_000_000;
+        let data: String = std::iter::repeat('x').take(len).collect::<String>();
+
+        assert_eq!(
+            test_client::<Request, Response>(addr, "test", 0, Request::Size(data)).0,
+            vec![Response(len as u64)]
         );
         rt.shutdown_now();
     }
