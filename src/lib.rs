@@ -1,6 +1,5 @@
 extern crate bytes;
 extern crate futures;
-extern crate futures01;
 extern crate serde;
 extern crate serde_json;
 extern crate tokio;
@@ -12,24 +11,22 @@ mod formats;
 
 use formats::*;
 use futures::channel::{mpsc, oneshot};
-use futures::compat::{Executor01CompatExt, Future01CompatExt, Stream01CompatExt};
 use futures::stream;
 use futures::stream::BoxStream;
-use futures::task::SpawnExt;
 use futures::{future, Future, Sink};
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
-use futures01::{Future as Future01, Stream as Stream01};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
-use tokio::executor::DefaultExecutor;
+// use tokio::executor::DefaultExecutor;
+use tokio::runtime::Runtime;
 use tracing::*;
 use util::yield_after::yield_after;
 use util::StreamUtil;
-use warp::filters::ws::{Message, WebSocket, Ws2};
+use warp::filters::ws::{Message, WebSocket, Ws};
 use warp::{Filter, Rejection};
 
 const WS_SEND_BUFFER_SIZE: usize = 1024;
@@ -98,11 +95,12 @@ pub fn serve(services: Vec<BoxedService>) -> impl Filter<Extract = (impl warp::R
         services.into_iter().map(|srv| (srv.id_ws().to_string(), srv)).collect();
 
     let services = Arc::new(services_index);
-    warp::ws2().map(move |ws: Ws2| {
+    warp::ws().map(move |ws: Ws| {
         let services_clone = services.clone();
         // Set the max frame size to 32 MB (defaults to 16 MB which we have hit at CTA)
         ws.max_frame_size(33_554_432)
-            .on_upgrade(move |socket| client_connected(socket, services_clone))
+            .on_upgrade(move |socket| client_connected(socket, services_clone).map(|_| ()))
+        // FIXME: previously here an error was returned that could be handled, see also client_connected def below
     })
 }
 
@@ -110,7 +108,7 @@ pub fn serve(services: Vec<BoxedService>) -> impl Filter<Extract = (impl warp::R
 fn client_connected(
     ws: WebSocket,
     services: Arc<BTreeMap<String, BoxedService>>,
-) -> impl Future01<Item = (), Error = ()> {
+) -> impl Future<Output = Result<(), ()>> {
     let (ws_out, ws_in) = ws.split();
 
     // Create an MPSC channel to merge outbound WS messages
@@ -122,15 +120,13 @@ fn client_connected(
     // does not need to actually look up the entry every time.
     let mut active_responses: HashMap<ReqId, oneshot::Sender<()>> = HashMap::new();
 
-    let executor = DefaultExecutor::current().compat();
+    // let executor = Runtime::new().unwrap();
 
     // Pipe the merged stream into the websocket output;
-    executor
-        .spawn(mux_out.fuse().compat().forward(ws_out).compat().map(|_| ()))
-        .expect("Could not spawn multiplex task into executor");
+    tokio::spawn(mux_out.fuse().forward(ws_out).map(|_| ()));
+    // .expect("Could not spawn multiplex task into executor");
 
     ws_in
-        .compat()
         .try_for_each(move |raw_msg| {
             if active_responses.len() > REQUEST_GC_THRESHOLD {
                 active_responses.retain(|_, canceled| !canceled.is_canceled());
@@ -150,26 +146,24 @@ fn client_connected(
                                     cancel_response_stream(previous);
                                 };
 
-                                executor
-                                    .spawn(serve_request(
-                                        rcv_cancel,
-                                        srv,
-                                        body.request_id,
-                                        body.payload,
-                                        mux_in.clone(),
-                                    ))
-                                    .expect("Could not spawn response stream task into executor");
+                                tokio::spawn(serve_request(
+                                    rcv_cancel,
+                                    srv,
+                                    body.request_id,
+                                    body.payload,
+                                    mux_in.clone(),
+                                ));
+                            // .expect("Could not spawn response stream task into executor");
                             } else {
-                                executor
-                                    .spawn(serve_error(
-                                        body.request_id,
-                                        ErrorKind::UnknownEndpoint {
-                                            endpoint: body.service_id.to_string(),
-                                            valid_endpoints: services.keys().cloned().collect::<Vec<String>>(),
-                                        },
-                                        mux_in.clone(),
-                                    ))
-                                    .expect("Cound not spawn error response stream into executor");
+                                tokio::spawn(serve_error(
+                                    body.request_id,
+                                    ErrorKind::UnknownEndpoint {
+                                        endpoint: body.service_id.to_string(),
+                                        valid_endpoints: services.keys().cloned().collect::<Vec<String>>(),
+                                    },
+                                    mux_in.clone(),
+                                ));
+                                // .expect("Cound not spawn error response stream into executor");
                                 warn!("Client tried to access unknown service: {}", body.service_id);
                             }
                         }
@@ -198,7 +192,6 @@ fn client_connected(
         .map_err(|err| {
             error!("Websocket closed with error {}", err);
         })
-        .compat()
 }
 
 // Wtf, clippy?
@@ -431,10 +424,12 @@ mod tests {
     }
 
     fn start_test_service() -> (SocketAddr, tokio::runtime::Runtime) {
-        let ws = warp::path("test_ws").and(super::serve(vec![TestService::new().boxed()]));
-
         let mut rt = tokio::runtime::Runtime::new().expect("could not start tokio runtime");
-        let (addr, task) = warp::serve(ws).bind_ephemeral(([127, 0, 0, 1], 0));
+
+        let (addr, task) = rt.block_on(futures::future::lazy(move |_| {
+            let ws = warp::path("test_ws").and(super::serve(vec![TestService::new().boxed()]));
+            warp::serve(ws).bind_ephemeral(([127, 0, 0, 1], 0))
+        }));
         rt.spawn(task);
         (addr, rt)
     }
@@ -447,7 +442,6 @@ mod tests {
             test_client::<Request, Response>(addr, "test", 0, Request::Count(5)).0,
             vec![Response(0), Response(1), Response(2), Response(3), Response(4)]
         );
-        rt.shutdown_now();
     }
 
     #[test]
@@ -460,7 +454,6 @@ mod tests {
             test_client::<Request, Response>(addr, "test", 0, Request::Size(data)).0,
             vec![Response(len as u64)]
         );
-        rt.shutdown_now();
     }
 
     #[test]
@@ -485,8 +478,6 @@ mod tests {
         for handle in join_handles {
             assert_eq!(handle.join().unwrap(), expected)
         }
-
-        rt.shutdown_now();
     }
 
     #[test]
@@ -507,8 +498,6 @@ mod tests {
                 }
             }
         );
-
-        rt.shutdown_now();
     }
 
     #[test]
@@ -535,8 +524,6 @@ mod tests {
         } else {
             panic!();
         }
-
-        rt.shutdown_now();
     }
 
     #[test]
@@ -557,8 +544,6 @@ mod tests {
                 },
             }
         );
-
-        rt.shutdown_now();
     }
 
     #[test]
@@ -576,8 +561,6 @@ mod tests {
                 kind: ErrorKind::InternalError,
             }
         );
-
-        rt.shutdown_now();
     }
 
     // Handle service panic
