@@ -21,8 +21,6 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
-// use tokio::executor::DefaultExecutor;
-use tokio::runtime::Runtime;
 use tracing::*;
 use util::yield_after::yield_after;
 use util::StreamUtil;
@@ -436,7 +434,7 @@ mod tests {
 
     #[test]
     fn properly_serve_single_request() {
-        let (addr, rt) = start_test_service();
+        let (addr, _rt) = start_test_service();
 
         assert_eq!(
             test_client::<Request, Response>(addr, "test", 0, Request::Count(5)).0,
@@ -446,7 +444,7 @@ mod tests {
 
     #[test]
     fn properly_serve_large_request() {
-        let (addr, rt) = start_test_service();
+        let (addr, _rt) = start_test_service();
         let len = 20_000_000;
         let data: String = std::iter::repeat('x').take(len).collect::<String>();
 
@@ -458,7 +456,7 @@ mod tests {
 
     #[test]
     fn multiplex_multiple_queries() {
-        let (addr, rt) = start_test_service();
+        let (addr, _rt) = start_test_service();
 
         let client_cnt = 50;
         let request_cnt = 100;
@@ -482,7 +480,7 @@ mod tests {
 
     #[test]
     fn report_wrong_endpoint() {
-        let (addr, rt) = start_test_service();
+        let (addr, _rt) = start_test_service();
 
         let (msgs, completion) = test_client::<Request, Response>(addr, "no_such_service", 49, Request::Count(5));
 
@@ -502,7 +500,7 @@ mod tests {
 
     #[test]
     fn report_badly_formatted_request() {
-        let (addr, rt) = start_test_service();
+        let (addr, _rt) = start_test_service();
 
         let (msgs, completion) = test_client::<BadRequest, Response>(
             addr,
@@ -528,7 +526,7 @@ mod tests {
 
     #[test]
     fn report_service_error() {
-        let (addr, rt) = start_test_service();
+        let (addr, _rt) = start_test_service();
 
         let (msgs, completion) =
             test_client::<Request, Response>(addr, "test", 49, Request::Fail("Test reason".to_string()));
@@ -548,7 +546,7 @@ mod tests {
 
     #[test]
     fn report_service_panic() {
-        let (addr, rt) = start_test_service();
+        let (addr, _rt) = start_test_service();
 
         let (msgs, completion) = test_client::<Request, Response>(addr, "test", 49, Request::Panic);
 
