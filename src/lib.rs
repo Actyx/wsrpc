@@ -98,7 +98,7 @@ pub fn serve(services: Vec<BoxedService>) -> impl Filter<Extract = (impl warp::R
         // Set the max frame size to 32 MB (defaults to 16 MB which we have hit at CTA)
         ws.max_frame_size(33_554_432)
             .on_upgrade(move |socket| client_connected(socket, services_clone).map(|_| ()))
-        // FIXME: previously here an error was returned that could be handled, see also client_connected def below
+        // on_upgrade does not take in errors any longer
     })
 }
 
@@ -118,11 +118,8 @@ fn client_connected(
     // does not need to actually look up the entry every time.
     let mut active_responses: HashMap<ReqId, oneshot::Sender<()>> = HashMap::new();
 
-    // let executor = Runtime::new().unwrap();
-
     // Pipe the merged stream into the websocket output;
     tokio::spawn(mux_out.fuse().forward(ws_out).map(|_| ()));
-    // .expect("Could not spawn multiplex task into executor");
 
     ws_in
         .try_for_each(move |raw_msg| {
@@ -151,7 +148,6 @@ fn client_connected(
                                     body.payload,
                                     mux_in.clone(),
                                 ));
-                            // .expect("Could not spawn response stream task into executor");
                             } else {
                                 tokio::spawn(serve_error(
                                     body.request_id,
@@ -161,7 +157,6 @@ fn client_connected(
                                     },
                                     mux_in.clone(),
                                 ));
-                                // .expect("Cound not spawn error response stream into executor");
                                 warn!("Client tried to access unknown service: {}", body.service_id);
                             }
                         }
