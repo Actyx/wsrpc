@@ -419,7 +419,7 @@ mod tests {
     fn start_test_service() -> (SocketAddr, tokio::runtime::Runtime) {
         let mut rt = tokio::runtime::Runtime::new().expect("could not start tokio runtime");
 
-        let (addr, task) = rt.block_on(futures::future::lazy(move |_| {
+        let (addr, task) = rt.block_on(async move {
             let ws = warp::path("test_ws").and(super::serve(vec![TestService::new().boxed()]));
             warp::serve(ws).bind_ephemeral(([127, 0, 0, 1], 0))
         }));
