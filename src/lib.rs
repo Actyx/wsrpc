@@ -422,7 +422,7 @@ mod tests {
         let (addr, task) = rt.block_on(async move {
             let ws = warp::path("test_ws").and(super::serve(vec![TestService::new().boxed()]));
             warp::serve(ws).bind_ephemeral(([127, 0, 0, 1], 0))
-        }));
+        });
         rt.spawn(task);
         (addr, rt)
     }
