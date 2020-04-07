@@ -8,7 +8,7 @@ edition = "2018"
 
 [dependencies]
 util = { path = "../util" }
-warp = { version ="0.2.2", git = "https://github.com/Actyx/warp.git", rev = "fdc62d6258204481bbaacc3e707c96dd92995119"}
+warp = { git = "https://github.com/seanmonstar/warp.git", rev = "fbbbc5b8377914463e4411ef6fc48bfd97d15a6d"}
 futures = { version = "~0.3.1", features = ["compat"] }
 serde = { version = "~1.0", features = ["derive"] }
 serde_json = { version = "~1.0", features = ["raw_value"] }
