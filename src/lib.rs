@@ -1,12 +1,3 @@
-extern crate bytes;
-extern crate futures;
-extern crate serde;
-extern crate serde_json;
-extern crate tokio;
-extern crate tracing;
-extern crate tracing_futures;
-extern crate warp;
-
 mod formats;
 
 use formats::*;
