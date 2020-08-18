@@ -86,8 +86,8 @@ pub fn serve(services: Vec<BoxedService>) -> impl Filter<Extract = (impl warp::R
     let services = Arc::new(services_index);
     warp::ws().map(move |ws: Ws| {
         let services_clone = services.clone();
-        // Set the max frame size to 32 MB (defaults to 16 MB which we have hit at CTA)
-        ws.max_frame_size(32 << 20)
+        // Set the max frame size to 64 MB (defaults to 16 MB which we have hit at CTA)
+        ws.max_frame_size(64 << 20)
             // Set the max message size to 128 MB (defaults to 64 MB which we have hit for an humongous snapshot)
             .max_message_size(128 << 20)
             .on_upgrade(move |socket| client_connected(socket, services_clone).map(|_| ()))
