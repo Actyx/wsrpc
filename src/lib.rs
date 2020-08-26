@@ -1,5 +1,6 @@
 mod formats;
 
+use actyxos_sdk::{app_id, tagged::AppId};
 use formats::*;
 use futures::channel::{mpsc, oneshot};
 use futures::stream;
@@ -29,7 +30,7 @@ pub trait Service {
 
     fn id(&self) -> &'static str;
 
-    fn serve(&self, req: Self::Req) -> BoxStream<'static, Result<Self::Resp, Self::Error>>;
+    fn serve(&self, app_id: AppId, req: Self::Req) -> BoxStream<'static, Result<Self::Resp, Self::Error>>;
 
     fn boxed(self) -> BoxedService
     where
@@ -42,7 +43,7 @@ pub trait Service {
 pub trait WebsocketService {
     fn id_ws(&self) -> &str;
 
-    fn serve_ws(&self, raw_req: Value) -> BoxStream<'static, Result<Value, ErrorKind>>;
+    fn serve_ws(&self, app_id: AppId, raw_req: Value) -> BoxStream<'static, Result<Value, ErrorKind>>;
 }
 
 impl<Req, Resp, S> WebsocketService for S
@@ -55,11 +56,11 @@ where
         self.id()
     }
 
-    fn serve_ws(&self, raw_req: Value) -> BoxStream<'static, Result<Value, ErrorKind>> {
+    fn serve_ws(&self, app_id: AppId, raw_req: Value) -> BoxStream<'static, Result<Value, ErrorKind>> {
         trace!("Serving raw request for service {}: {:?}", self.id(), raw_req);
         match serde_json::from_value(raw_req) {
             Ok(req) => self
-                .serve(req)
+                .serve(app_id, req)
                 .map(|resp_result| {
                     resp_result
                         .map(|resp| serde_json::to_value(&resp).expect("Could not serialize service response"))
@@ -79,18 +80,22 @@ where
 
 pub type BoxedService = Box<dyn WebsocketService + Send + Sync>;
 
-pub fn serve(services: Vec<BoxedService>) -> impl Filter<Extract = (impl warp::Reply,), Error = Rejection> + Clone {
+pub fn serve(
+    services: Vec<BoxedService>,
+    app_id_filter: impl Filter<Extract = (AppId,), Error = Rejection> + Clone,
+) -> impl Filter<Extract = (impl warp::Reply,), Error = Rejection> + Clone {
     let services_index: BTreeMap<String, BoxedService> =
         services.into_iter().map(|srv| (srv.id_ws().to_string(), srv)).collect();
 
     let services = Arc::new(services_index);
-    warp::ws().map(move |ws: Ws| {
+
+    app_id_filter.and(warp::ws()).map(move |app_id: AppId, ws: Ws| {
         let services_clone = services.clone();
         // Set the max frame size to 64 MB (defaults to 16 MB which we have hit at CTA)
         ws.max_frame_size(64 << 20)
             // Set the max message size to 128 MB (defaults to 64 MB which we have hit for an humongous snapshot)
             .max_message_size(128 << 20)
-            .on_upgrade(move |socket| client_connected(socket, services_clone).map(|_| ()))
+            .on_upgrade(move |socket| client_connected(socket, app_id, services_clone).map(|_| ()))
         // on_upgrade does not take in errors any longer
     })
 }
@@ -98,6 +103,7 @@ pub fn serve(services: Vec<BoxedService>) -> impl Filter<Extract = (impl warp::R
 #[allow(clippy::cognitive_complexity)]
 fn client_connected(
     ws: WebSocket,
+    app_id: AppId,
     services: Arc<BTreeMap<String, BoxedService>>,
 ) -> impl Future<Output = Result<(), ()>> {
     let (ws_out, ws_in) = ws.split();
@@ -137,6 +143,7 @@ fn client_connected(
                                 tokio::spawn(serve_request(
                                     rcv_cancel,
                                     srv,
+                                    app_id.clone(),
                                     body.request_id,
                                     body.payload,
                                     mux_in.clone(),
@@ -207,19 +214,22 @@ fn cancel_response_streams_close_channel(
 
 fn serve_request_stream(
     srv: &BoxedService,
+    app_id: AppId,
     req_id: ReqId,
     payload: Value,
 ) -> impl Stream<Item = Result<Message, warp::Error>> {
-    let resp_stream = srv.serve_ws(payload).map(move |payload_result| match payload_result {
-        Ok(payload) => Outgoing::Next {
-            request_id: req_id,
-            payload,
-        },
-        Err(kind) => Outgoing::Error {
-            request_id: req_id,
-            kind,
-        },
-    });
+    let resp_stream = srv
+        .serve_ws(app_id, payload)
+        .map(move |payload_result| match payload_result {
+            Ok(payload) => Outgoing::Next {
+                request_id: req_id,
+                payload,
+            },
+            Err(kind) => Outgoing::Error {
+                request_id: req_id,
+                kind,
+            },
+        });
 
     AssertUnwindSafe(resp_stream)
         .catch_unwind()
@@ -237,11 +247,12 @@ fn serve_request_stream(
 fn serve_request<T: std::fmt::Debug>(
     canceled: oneshot::Receiver<()>,
     srv: &BoxedService,
+    app_id: AppId,
     req_id: ReqId,
     payload: Value,
     output: impl Sink<Result<Message, warp::Error>, Error = T>,
 ) -> impl Future<Output = ()> {
-    let response_stream = serve_request_stream(srv, req_id, payload)
+    let response_stream = serve_request_stream(srv, app_id, req_id, payload)
         .take_until_signaled(canceled)
         .map(|item| {
             // We need to re-wrap in an outer result because Sink requires SinkError as the error type
@@ -274,6 +285,12 @@ fn serve_error(
         if result.is_err() {
             error!("Could not send Error message");
         };
+    })
+}
+
+pub fn static_app_id() -> impl Filter<Extract = (AppId,), Error = Rejection> + Clone {
+    warp::any().and_then(move || {
+        future::ok(app_id!("UNUSED")).map_err(|_: std::convert::Infallible| -> Rejection { warp::reject::reject() })
     })
 }
 
@@ -324,7 +341,7 @@ mod tests {
             "test"
         }
 
-        fn serve(&self, req: Request) -> BoxStream<'static, Result<Response, String>> {
+        fn serve(&self, _app_id: AppId, req: Request) -> BoxStream<'static, Result<Response, String>> {
             match req {
                 Request::Count(cnt) => {
                     let mut ctr = 0;
@@ -413,7 +430,7 @@ mod tests {
         let mut rt = tokio::runtime::Runtime::new().expect("could not start tokio runtime");
 
         let (addr, task) = rt.block_on(async move {
-            let ws = warp::path("test_ws").and(super::serve(vec![TestService::new().boxed()]));
+            let ws = warp::path("test_ws").and(super::serve(vec![TestService::new().boxed()], static_app_id()));
             warp::serve(ws).bind_ephemeral(([127, 0, 0, 1], 0))
         });
         rt.spawn(task);

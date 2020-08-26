@@ -8,7 +8,7 @@ edition = "2018"
 
 [dependencies]
 util = { path = "../util" }
-warp = { git = "https://github.com/seanmonstar/warp.git", rev = "fbbbc5b8377914463e4411ef6fc48bfd97d15a6d"}
+warp = "0.2.4"
 futures = "~0.3.5"
 serde = { version = "~1.0", features = ["derive"] }
 serde_json = { version = "~1.0", features = ["raw_value"] }
@@ -16,6 +16,7 @@ bytes = "~0.4"
 tokio = { version = "~0.2", features = ["full"] }
 tracing = "~0.1"
 tracing-futures = "~0.1"
+actyxos_sdk = { path = "../../rust/sdk" }
 
 [dev-dependencies]
 websocket = "~0.23"
