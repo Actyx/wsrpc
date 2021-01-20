@@ -8,15 +8,15 @@ edition = "2018"
 
 [dependencies]
 util = { path = "../util" }
-warp = "0.2.4"
-futures = "~0.3.5"
-serde = { version = "~1.0", features = ["derive"] }
-serde_json = { version = "~1.0", features = ["raw_value"] }
-bytes = "~0.4"
-tokio = { version = "~0.2", features = ["full"] }
-tracing = "~0.1"
-tracing-futures = "~0.1"
+warp = "0.3.0"
+futures = { version = "0.3.12", package = "futures" }
+serde = { version = "1.0.120", features = ["derive"] }
+serde_json = { version = "1.0.61", features = ["raw_value"] }
+bytes = "1.0.1"
+tokio = { version = "1.0.2", features = ["full"], package = "tokio" }
+tracing = "0.1.22"
+tracing-futures = "0.2.4"
 actyxos_sdk = { path = "../../rust/sdk" }
 
 [dev-dependencies]
-websocket = "~0.23"
+websocket = "0.26.2"
