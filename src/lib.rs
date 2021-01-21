@@ -15,7 +15,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use tracing::*;
-use util::yield_after::yield_after;
 use warp::filters::ws::{Message, WebSocket, Ws};
 use warp::{Filter, Rejection};
 
@@ -260,7 +259,8 @@ fn serve_request<T: std::fmt::Debug>(
             Ok(item)
         });
 
-    yield_after(response_stream, INTER_STREAM_FAIRNESS)
+    response_stream
+        .yield_after(INTER_STREAM_FAIRNESS)
         .forward(output)
         .map(|result| {
             if let Err(cause) = result {
