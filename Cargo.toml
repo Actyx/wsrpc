@@ -8,6 +8,7 @@ edition = "2018"
 
 [dependencies]
 util = { path = "../util" }
+ax-futures-util = { path = "../ax-futures-util" }
 warp = "0.3.0"
 futures = { version = "0.3.12", package = "futures" }
 serde = { version = "1.0.120", features = ["derive"] }
