@@ -426,20 +426,16 @@ mod tests {
         (msgs, completion.expect("Expected a completion message"))
     }
 
-    fn start_test_service() -> (SocketAddr, tokio::runtime::Runtime) {
-        let rt = tokio::runtime::Runtime::new().expect("could not start tokio runtime");
-
-        let (addr, task) = rt.block_on(async move {
-            let ws = warp::path("test_ws").and(super::serve(vec![TestService::new().boxed()], static_app_id()));
-            warp::serve(ws).bind_ephemeral(([127, 0, 0, 1], 0))
-        });
-        rt.spawn(task);
-        (addr, rt)
+    async fn start_test_service() -> SocketAddr {
+        let ws = warp::path("test_ws").and(super::serve(vec![TestService::new().boxed()], static_app_id()));
+        let (addr, task) = warp::serve(ws).bind_ephemeral(([127, 0, 0, 1], 0));
+        tokio::spawn(task);
+        addr
     }
 
-    #[test]
-    fn properly_serve_single_request() {
-        let (addr, _rt) = start_test_service();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn properly_serve_single_request() {
+        let addr = start_test_service().await;
 
         assert_eq!(
             test_client::<Request, Response>(addr, "test", 0, Request::Count(5)).0,
@@ -447,9 +443,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn properly_serve_large_request() {
-        let (addr, _rt) = start_test_service();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn properly_serve_large_request() {
+        let addr = start_test_service().await;
         let len = 20_000_000;
         let data: String = std::iter::repeat('x').take(len).collect::<String>();
 
@@ -459,9 +455,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn multiplex_multiple_queries() {
-        let (addr, _rt) = start_test_service();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn multiplex_multiple_queries() {
+        let addr = start_test_service().await;
 
         let client_cnt = 50;
         let request_cnt = 100;
@@ -483,9 +479,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn report_wrong_endpoint() {
-        let (addr, _rt) = start_test_service();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn report_wrong_endpoint() {
+        let addr = start_test_service().await;
 
         let (msgs, completion) = test_client::<Request, Response>(addr, "no_such_service", 49, Request::Count(5));
 
@@ -503,9 +499,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn report_badly_formatted_request() {
-        let (addr, _rt) = start_test_service();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn report_badly_formatted_request() {
+        let addr = start_test_service().await;
 
         let (msgs, completion) = test_client::<BadRequest, Response>(
             addr,
@@ -529,9 +525,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn report_service_error() {
-        let (addr, _rt) = start_test_service();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn report_service_error() {
+        let addr = start_test_service().await;
 
         let (msgs, completion) =
             test_client::<Request, Response>(addr, "test", 49, Request::Fail("Test reason".to_string()));
@@ -549,9 +545,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn report_service_panic() {
-        let (addr, _rt) = start_test_service();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn report_service_panic() {
+        let addr = start_test_service().await;
 
         let (msgs, completion) = test_client::<Request, Response>(addr, "test", 49, Request::Panic);
 
