@@ -11,7 +11,7 @@ util = { path = "../util" }
 ax-futures-util = { path = "../ax-futures-util" }
 warp = "0.3.0"
 futures = { version = "0.3.12", package = "futures" }
-serde = { version = "1.0.121", features = ["derive"] }
+serde = { version = "1.0.123", features = ["derive"] }
 serde_json = { version = "1.0.61", features = ["raw_value"] }
 bytes = "1.0.1"
 tokio = { version = "1.1.0", features = ["full"], package = "tokio" }
