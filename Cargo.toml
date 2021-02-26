@@ -4,8 +4,6 @@ version = "0.1.0"
 authors = ["Actyx AG"]
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 ax-futures-util = { path = "../ax-futures-util" }
 warp = "0.3.0"
@@ -16,7 +14,6 @@ bytes = "1.0.1"
 tokio = { version = "1.2.0", features = ["full"], package = "tokio" }
 tracing = "0.1.22"
 tracing-futures = "0.2.4"
-actyxos_sdk = { path = "../../rust/sdk" }
 
 [dev-dependencies]
 websocket = "0.26.2"
