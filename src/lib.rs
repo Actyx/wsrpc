@@ -89,13 +89,12 @@ pub async fn serve<Ctx: Clone + Send + 'static>(
 
     let services = Arc::new(services_index);
 
-    let services_clone = services.clone();
     // Set the max frame size to 64 MB (defaults to 16 MB which we have hit at CTA)
     Ok(ws
         .max_frame_size(64 << 20)
         // Set the max message size to 128 MB (defaults to 64 MB which we have hit for an humongous snapshot)
         .max_message_size(128 << 20)
-        .on_upgrade(move |socket| client_connected(socket, ctx, services_clone).map(|_| ())))
+        .on_upgrade(move |socket| client_connected(socket, ctx, services).map(|_| ())))
     // on_upgrade does not take in errors any longer
 }
 
