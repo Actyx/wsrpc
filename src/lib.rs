@@ -26,8 +26,6 @@ pub trait Service {
     type Error: Serialize + 'static;
     type Ctx: Clone;
 
-    fn id(&self) -> &'static str;
-
     fn serve(&self, ctx: Self::Ctx, req: Self::Req) -> BoxStream<'static, Result<Self::Resp, Self::Error>>;
 
     fn boxed(self) -> BoxedService<Self::Ctx>
@@ -39,9 +37,7 @@ pub trait Service {
 }
 
 pub trait WebsocketService<Ctx: Clone> {
-    fn id_ws(&self) -> &str;
-
-    fn serve_ws(&self, ctx: Ctx, raw_req: Value) -> BoxStream<'static, Result<Value, ErrorKind>>;
+    fn serve_ws(&self, ctx: Ctx, raw_req: Value, service_id: &str) -> BoxStream<'static, Result<Value, ErrorKind>>;
 }
 
 impl<Req, Resp, Ctx, S> WebsocketService<Ctx> for S
@@ -51,12 +47,8 @@ where
     Resp: Serialize + 'static,
     Ctx: Clone,
 {
-    fn id_ws(&self) -> &str {
-        self.id()
-    }
-
-    fn serve_ws(&self, ctx: Ctx, raw_req: Value) -> BoxStream<'static, Result<Value, ErrorKind>> {
-        trace!("Serving raw request for service {}: {:?}", self.id(), raw_req);
+    fn serve_ws(&self, ctx: Ctx, raw_req: Value, service_id: &str) -> BoxStream<'static, Result<Value, ErrorKind>> {
+        trace!("Serving raw request for service {}: {:?}", service_id, raw_req);
         match serde_json::from_value(raw_req) {
             Ok(req) => self
                 .serve(ctx, req)
@@ -70,7 +62,7 @@ where
                 .boxed(),
             Err(cause) => {
                 let message = format!("{}", cause);
-                warn!("Error deserializing request for service {}: {}", self.id(), message);
+                warn!("Error deserializing request for service {}: {}", service_id, message);
                 stream::once(future::err(ErrorKind::BadRequest { message })).boxed()
             }
         }
@@ -81,14 +73,9 @@ pub type BoxedService<Ctx> = Box<dyn WebsocketService<Ctx> + Send + Sync>;
 
 pub async fn serve<Ctx: Clone + Send + 'static>(
     ws: warp::ws::Ws,
-    services: Vec<BoxedService<Ctx>>,
+    services: Arc<BTreeMap<&'static str, BoxedService<Ctx>>>,
     ctx: Ctx,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    let services_index: BTreeMap<String, BoxedService<Ctx>> =
-        services.into_iter().map(|srv| (srv.id_ws().to_string(), srv)).collect();
-
-    let services = Arc::new(services_index);
-
     // Set the max frame size to 64 MB (defaults to 16 MB which we have hit at CTA)
     Ok(ws
         .max_frame_size(64 << 20)
@@ -102,7 +89,7 @@ pub async fn serve<Ctx: Clone + Send + 'static>(
 fn client_connected<Ctx: Clone + Send + 'static>(
     ws: WebSocket,
     ctx: Ctx,
-    services: Arc<BTreeMap<String, BoxedService<Ctx>>>,
+    services: Arc<BTreeMap<&'static str, BoxedService<Ctx>>>,
 ) -> impl Future<Output = Result<(), ()>> {
     let (ws_out, ws_in) = ws.split();
 
@@ -142,6 +129,7 @@ fn client_connected<Ctx: Clone + Send + 'static>(
                                     rcv_cancel,
                                     srv,
                                     ctx.clone(),
+                                    body.service_id,
                                     body.request_id,
                                     body.payload,
                                     mux_in.clone(),
@@ -151,7 +139,10 @@ fn client_connected<Ctx: Clone + Send + 'static>(
                                     body.request_id,
                                     ErrorKind::UnknownEndpoint {
                                         endpoint: body.service_id.to_string(),
-                                        valid_endpoints: services.keys().cloned().collect::<Vec<String>>(),
+                                        valid_endpoints: services
+                                            .keys()
+                                            .map(|e| e.to_string())
+                                            .collect::<Vec<String>>(),
                                     },
                                     mux_in.clone(),
                                 ));
@@ -213,11 +204,12 @@ fn cancel_response_streams_close_channel(
 fn serve_request_stream<Ctx: Clone>(
     srv: &BoxedService<Ctx>,
     ctx: Ctx,
+    service_id: &str,
     req_id: ReqId,
     payload: Value,
 ) -> impl Stream<Item = Result<Message, warp::Error>> {
     let resp_stream = srv
-        .serve_ws(ctx, payload)
+        .serve_ws(ctx, payload, service_id)
         .map(move |payload_result| match payload_result {
             Ok(payload) => Outgoing::Next {
                 request_id: req_id,
@@ -246,11 +238,12 @@ fn serve_request<T: std::fmt::Debug, Ctx: Clone>(
     canceled: oneshot::Receiver<()>,
     srv: &BoxedService<Ctx>,
     ctx: Ctx,
+    service_id: &str,
     req_id: ReqId,
     payload: Value,
     output: impl Sink<Result<Message, warp::Error>, Error = T>,
 ) -> impl Future<Output = ()> {
-    let response_stream = serve_request_stream(srv, ctx, req_id, payload)
+    let response_stream = serve_request_stream(srv, ctx, service_id, req_id, payload)
         .take_until_signaled(canceled)
         .map(|item| {
             // We need to re-wrap in an outer result because Sink requires SinkError as the error type
@@ -331,10 +324,6 @@ mod tests {
         type Resp = Response;
         type Error = String;
         type Ctx = u64;
-
-        fn id(&self) -> &'static str {
-            "test"
-        }
 
         fn serve(&self, ctx: u64, req: Request) -> BoxStream<'static, Result<Response, String>> {
             match req {
@@ -423,9 +412,10 @@ mod tests {
     }
 
     async fn start_test_service() -> SocketAddr {
+        let services = Arc::new(maplit::btreemap! {"test" => TestService::new().boxed()});
         let ws = warp::path("test_ws")
             .and(warp::ws())
-            .and(warp::any().map(move || vec![TestService::new().boxed()]))
+            .and(warp::any().map(move || services.clone()))
             .and(warp::any().map(move || 23))
             .and_then(super::serve);
         let (addr, task) = warp::serve(ws).bind_ephemeral(([127, 0, 0, 1], 0));

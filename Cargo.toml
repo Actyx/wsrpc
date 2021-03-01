@@ -17,3 +17,5 @@ tracing-futures = "0.2.4"
 
 [dev-dependencies]
 websocket = "0.26.2"
+maplit = "1.0.2"
+
