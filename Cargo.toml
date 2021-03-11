@@ -5,7 +5,6 @@ authors = ["Actyx AG"]
 edition = "2018"
 
 [dependencies]
-actyxos_sdk = { path = "../../rust/sdk" }
 ax-futures-util = { path = "../ax-futures-util" }
 
 bytes = "1.0.1"
