@@ -19,3 +19,5 @@ warp = "0.3.0"
 
 [dev-dependencies]
 websocket = "0.26.2"
+maplit = "1.0.2"
+

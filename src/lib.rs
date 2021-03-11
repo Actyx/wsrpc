@@ -1,6 +1,5 @@
 mod formats;
 
-use actyxos_sdk::{app_id, tagged::AppId};
 use ax_futures_util::prelude::*;
 use formats::*;
 use futures::channel::{mpsc, oneshot};
@@ -15,8 +14,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use tracing::*;
-use warp::filters::ws::{Message, WebSocket, Ws};
-use warp::{Filter, Rejection};
+use warp::filters::ws::{Message, WebSocket};
 
 const WS_SEND_BUFFER_SIZE: usize = 1024;
 const REQUEST_GC_THRESHOLD: usize = 64;
@@ -26,40 +24,34 @@ pub trait Service {
     type Req: DeserializeOwned;
     type Resp: Serialize + 'static;
     type Error: Serialize + 'static;
+    type Ctx: Clone;
 
-    fn id(&self) -> &'static str;
+    fn serve(&self, ctx: Self::Ctx, req: Self::Req) -> BoxStream<'static, Result<Self::Resp, Self::Error>>;
 
-    fn serve(&self, app_id: AppId, req: Self::Req) -> BoxStream<'static, Result<Self::Resp, Self::Error>>;
-
-    fn boxed(self) -> BoxedService
+    fn boxed(self) -> BoxedService<Self::Ctx>
     where
-        Self: Send + WebsocketService + Sized + Sync + 'static,
+        Self: Send + Sized + Sync + 'static,
     {
         Box::new(self)
     }
 }
 
-pub trait WebsocketService {
-    fn id_ws(&self) -> &str;
-
-    fn serve_ws(&self, app_id: AppId, raw_req: Value) -> BoxStream<'static, Result<Value, ErrorKind>>;
+pub trait WebsocketService<Ctx: Clone> {
+    fn serve_ws(&self, ctx: Ctx, raw_req: Value, service_id: &str) -> BoxStream<'static, Result<Value, ErrorKind>>;
 }
 
-impl<Req, Resp, S> WebsocketService for S
+impl<Req, Resp, Ctx, S> WebsocketService<Ctx> for S
 where
-    S: Service<Req = Req, Resp = Resp>,
+    S: Service<Req = Req, Resp = Resp, Ctx = Ctx>,
     Req: DeserializeOwned,
     Resp: Serialize + 'static,
+    Ctx: Clone,
 {
-    fn id_ws(&self) -> &str {
-        self.id()
-    }
-
-    fn serve_ws(&self, app_id: AppId, raw_req: Value) -> BoxStream<'static, Result<Value, ErrorKind>> {
-        trace!("Serving raw request for service {}: {:?}", self.id(), raw_req);
+    fn serve_ws(&self, ctx: Ctx, raw_req: Value, service_id: &str) -> BoxStream<'static, Result<Value, ErrorKind>> {
+        trace!("Serving raw request for service {}: {:?}", service_id, raw_req);
         match serde_json::from_value(raw_req) {
             Ok(req) => self
-                .serve(app_id, req)
+                .serve(ctx, req)
                 .map(|resp_result| {
                     resp_result
                         .map(|resp| serde_json::to_value(&resp).expect("Could not serialize service response"))
@@ -70,40 +62,34 @@ where
                 .boxed(),
             Err(cause) => {
                 let message = format!("{}", cause);
-                warn!("Error deserializing request for service {}: {}", self.id(), message);
+                warn!("Error deserializing request for service {}: {}", service_id, message);
                 stream::once(future::err(ErrorKind::BadRequest { message })).boxed()
             }
         }
     }
 }
 
-pub type BoxedService = Box<dyn WebsocketService + Send + Sync>;
+pub type BoxedService<Ctx> = Box<dyn WebsocketService<Ctx> + Send + Sync>;
 
-pub fn serve(
-    services: Vec<BoxedService>,
-    app_id_filter: impl Filter<Extract = (AppId,), Error = Rejection> + Clone,
-) -> impl Filter<Extract = (impl warp::Reply,), Error = Rejection> + Clone {
-    let services_index: BTreeMap<String, BoxedService> =
-        services.into_iter().map(|srv| (srv.id_ws().to_string(), srv)).collect();
-
-    let services = Arc::new(services_index);
-
-    app_id_filter.and(warp::ws()).map(move |app_id: AppId, ws: Ws| {
-        let services_clone = services.clone();
-        // Set the max frame size to 64 MB (defaults to 16 MB which we have hit at CTA)
-        ws.max_frame_size(64 << 20)
-            // Set the max message size to 128 MB (defaults to 64 MB which we have hit for an humongous snapshot)
-            .max_message_size(128 << 20)
-            .on_upgrade(move |socket| client_connected(socket, app_id, services_clone).map(|_| ()))
-        // on_upgrade does not take in errors any longer
-    })
+pub async fn serve<Ctx: Clone + Send + 'static>(
+    ws: warp::ws::Ws,
+    services: Arc<BTreeMap<&'static str, BoxedService<Ctx>>>,
+    ctx: Ctx,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    // Set the max frame size to 64 MB (defaults to 16 MB which we have hit at CTA)
+    Ok(ws
+        .max_frame_size(64 << 20)
+        // Set the max message size to 128 MB (defaults to 64 MB which we have hit for an humongous snapshot)
+        .max_message_size(128 << 20)
+        .on_upgrade(move |socket| client_connected(socket, ctx, services).map(|_| ())))
+    // on_upgrade does not take in errors any longer
 }
 
 #[allow(clippy::cognitive_complexity)]
-fn client_connected(
+fn client_connected<Ctx: Clone + Send + 'static>(
     ws: WebSocket,
-    app_id: AppId,
-    services: Arc<BTreeMap<String, BoxedService>>,
+    ctx: Ctx,
+    services: Arc<BTreeMap<&'static str, BoxedService<Ctx>>>,
 ) -> impl Future<Output = Result<(), ()>> {
     let (ws_out, ws_in) = ws.split();
 
@@ -142,7 +128,8 @@ fn client_connected(
                                 tokio::spawn(serve_request(
                                     rcv_cancel,
                                     srv,
-                                    app_id.clone(),
+                                    ctx.clone(),
+                                    body.service_id,
                                     body.request_id,
                                     body.payload,
                                     mux_in.clone(),
@@ -152,7 +139,10 @@ fn client_connected(
                                     body.request_id,
                                     ErrorKind::UnknownEndpoint {
                                         endpoint: body.service_id.to_string(),
-                                        valid_endpoints: services.keys().cloned().collect::<Vec<String>>(),
+                                        valid_endpoints: services
+                                            .keys()
+                                            .map(|e| e.to_string())
+                                            .collect::<Vec<String>>(),
                                     },
                                     mux_in.clone(),
                                 ));
@@ -211,14 +201,15 @@ fn cancel_response_streams_close_channel(
     mux_in.close_channel();
 }
 
-fn serve_request_stream(
-    srv: &BoxedService,
-    app_id: AppId,
+fn serve_request_stream<Ctx: Clone>(
+    srv: &BoxedService<Ctx>,
+    ctx: Ctx,
+    service_id: &str,
     req_id: ReqId,
     payload: Value,
 ) -> impl Stream<Item = Result<Message, warp::Error>> {
     let resp_stream = srv
-        .serve_ws(app_id, payload)
+        .serve_ws(ctx, payload, service_id)
         .map(move |payload_result| match payload_result {
             Ok(payload) => Outgoing::Next {
                 request_id: req_id,
@@ -243,15 +234,16 @@ fn serve_request_stream(
         .map(|env| Ok(Message::text(serde_json::to_string(&env).unwrap())))
 }
 
-fn serve_request<T: std::fmt::Debug>(
+fn serve_request<T: std::fmt::Debug, Ctx: Clone>(
     canceled: oneshot::Receiver<()>,
-    srv: &BoxedService,
-    app_id: AppId,
+    srv: &BoxedService<Ctx>,
+    ctx: Ctx,
+    service_id: &str,
     req_id: ReqId,
     payload: Value,
     output: impl Sink<Result<Message, warp::Error>, Error = T>,
 ) -> impl Future<Output = ()> {
-    let response_stream = serve_request_stream(srv, app_id, req_id, payload)
+    let response_stream = serve_request_stream(srv, ctx, service_id, req_id, payload)
         .take_until_signaled(canceled)
         .map(|item| {
             // We need to re-wrap in an outer result because Sink requires SinkError as the error type
@@ -288,12 +280,6 @@ fn serve_error(
     })
 }
 
-pub fn static_app_id() -> impl Filter<Extract = (AppId,), Error = Rejection> + Clone {
-    warp::any().and_then(move || {
-        future::ok(app_id!("UNUSED")).map_err(|_: std::convert::Infallible| -> Rejection { warp::reject::reject() })
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,6 +298,7 @@ mod tests {
     enum Request {
         Count(u64),   // Returns numbers 0..N
         Size(String), // returns data size
+        Ctx,          // returns the provided context
         Fail(String), // Fails the service normally with given reason
         Panic,        // Panics the service
     }
@@ -336,12 +323,9 @@ mod tests {
         type Req = Request;
         type Resp = Response;
         type Error = String;
+        type Ctx = u64;
 
-        fn id(&self) -> &'static str {
-            "test"
-        }
-
-        fn serve(&self, _app_id: AppId, req: Request) -> BoxStream<'static, Result<Response, String>> {
+        fn serve(&self, ctx: u64, req: Request) -> BoxStream<'static, Result<Response, String>> {
             match req {
                 Request::Count(cnt) => {
                     let mut ctr = 0;
@@ -357,6 +341,7 @@ mod tests {
                     .boxed()
                 }
                 Request::Size(data) => stream::once(future::ok(Response(data.len() as u64))).boxed(),
+                Request::Ctx => stream::once(future::ok(Response(ctx))).boxed(),
                 Request::Fail(reason) => stream::once(future::err(reason)).boxed(),
                 Request::Panic => stream::poll_fn(|_| panic!("Test panic")).boxed(),
             }
@@ -427,7 +412,12 @@ mod tests {
     }
 
     async fn start_test_service() -> SocketAddr {
-        let ws = warp::path("test_ws").and(super::serve(vec![TestService::new().boxed()], static_app_id()));
+        let services = Arc::new(maplit::btreemap! {"test" => TestService::new().boxed()});
+        let ws = warp::path("test_ws")
+            .and(warp::ws())
+            .and(warp::any().map(move || services.clone()))
+            .and(warp::any().map(move || 23))
+            .and_then(super::serve);
         let (addr, task) = warp::serve(ws).bind_ephemeral(([127, 0, 0, 1], 0));
         tokio::spawn(task);
         addr
@@ -440,6 +430,16 @@ mod tests {
         assert_eq!(
             test_client::<Request, Response>(addr, "test", 0, Request::Count(5)).0,
             vec![Response(0), Response(1), Response(2), Response(3), Response(4)]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn properly_serve_single_request_ctx() {
+        let addr = start_test_service().await;
+
+        assert_eq!(
+            test_client::<Request, Response>(addr, "test", 0, Request::Ctx).0,
+            vec![Response(23)]
         );
     }
 
