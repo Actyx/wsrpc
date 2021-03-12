@@ -1,6 +1,6 @@
 mod formats;
+mod util;
 
-use ax_futures_util::prelude::*;
 use formats::*;
 use futures::channel::{mpsc, oneshot};
 use futures::stream;
@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use tracing::*;
+use util::UtilStreamExt;
 use warp::filters::ws::{Message, WebSocket};
 
 const WS_SEND_BUFFER_SIZE: usize = 1024;

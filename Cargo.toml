@@ -8,10 +8,9 @@ keywords = ["websocket", "rpc"]
 description = "WebSocket-based RPC server"
 
 [dependencies]
-ax-futures-util = { path = "../ax-futures-util" }
-
 bytes = "1.0.1"
 futures = { version = "0.3.12", package = "futures" }
+pin-project-lite = "0.2.4"
 serde = { version = "1.0.123", features = ["derive"] }
 serde_json = { version = "1.0.61", features = ["raw_value"] }
 tokio = { version = "1.2.0", features = ["full"], package = "tokio" }
@@ -22,4 +21,3 @@ warp = "0.3.0"
 [dev-dependencies]
 websocket = "0.26.2"
 maplit = "1.0.2"
-
