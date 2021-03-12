@@ -26,7 +26,11 @@ pub trait Service {
     type Error: Serialize + 'static;
     type Ctx: Clone;
 
-    fn serve(&self, ctx: Self::Ctx, req: Self::Req) -> BoxStream<'static, Result<Self::Resp, Self::Error>>;
+    fn serve(
+        &self,
+        ctx: Self::Ctx,
+        req: Self::Req,
+    ) -> BoxStream<'static, Result<Self::Resp, Self::Error>>;
 
     fn boxed(self) -> BoxedService<Self::Ctx>
     where
@@ -37,7 +41,12 @@ pub trait Service {
 }
 
 pub trait WebsocketService<Ctx: Clone> {
-    fn serve_ws(&self, ctx: Ctx, raw_req: Value, service_id: &str) -> BoxStream<'static, Result<Value, ErrorKind>>;
+    fn serve_ws(
+        &self,
+        ctx: Ctx,
+        raw_req: Value,
+        service_id: &str,
+    ) -> BoxStream<'static, Result<Value, ErrorKind>>;
 }
 
 impl<Req, Resp, Ctx, S> WebsocketService<Ctx> for S
@@ -47,22 +56,38 @@ where
     Resp: Serialize + 'static,
     Ctx: Clone,
 {
-    fn serve_ws(&self, ctx: Ctx, raw_req: Value, service_id: &str) -> BoxStream<'static, Result<Value, ErrorKind>> {
-        trace!("Serving raw request for service {}: {:?}", service_id, raw_req);
+    fn serve_ws(
+        &self,
+        ctx: Ctx,
+        raw_req: Value,
+        service_id: &str,
+    ) -> BoxStream<'static, Result<Value, ErrorKind>> {
+        trace!(
+            "Serving raw request for service {}: {:?}",
+            service_id,
+            raw_req
+        );
         match serde_json::from_value(raw_req) {
             Ok(req) => self
                 .serve(ctx, req)
                 .map(|resp_result| {
                     resp_result
-                        .map(|resp| serde_json::to_value(&resp).expect("Could not serialize service response"))
+                        .map(|resp| {
+                            serde_json::to_value(&resp)
+                                .expect("Could not serialize service response")
+                        })
                         .map_err(|err| ErrorKind::ServiceError {
-                            value: serde_json::to_value(&err).expect("Could not serialize service error response"),
+                            value: serde_json::to_value(&err)
+                                .expect("Could not serialize service error response"),
                         })
                 })
                 .boxed(),
             Err(cause) => {
                 let message = format!("{}", cause);
-                warn!("Error deserializing request for service {}: {}", service_id, message);
+                warn!(
+                    "Error deserializing request for service {}: {}",
+                    service_id, message
+                );
                 stream::once(future::err(ErrorKind::BadRequest { message })).boxed()
             }
         }
@@ -121,7 +146,9 @@ fn client_connected<Ctx: Clone + Send + 'static>(
                                 // Set up cancellation signal
                                 let (snd_cancel, rcv_cancel) = oneshot::channel();
 
-                                if let Some(previous) = active_responses.insert(body.request_id, snd_cancel) {
+                                if let Some(previous) =
+                                    active_responses.insert(body.request_id, snd_cancel)
+                                {
                                     cancel_response_stream(previous);
                                 };
 
@@ -146,7 +173,10 @@ fn client_connected<Ctx: Clone + Send + 'static>(
                                     },
                                     mux_in.clone(),
                                 ));
-                                warn!("Client tried to access unknown service: {}", body.service_id);
+                                warn!(
+                                    "Client tried to access unknown service: {}",
+                                    body.service_id
+                                );
                             }
                         }
                         Incoming::Cancel { request_id } => {
@@ -156,7 +186,10 @@ fn client_connected<Ctx: Clone + Send + 'static>(
                         }
                     },
                     Err(cause) => {
-                        error!("Could not deserialize client request {}: {}", text_msg, cause);
+                        error!(
+                            "Could not deserialize client request {}: {}",
+                            text_msg, cause
+                        );
                         cancel_response_streams_close_channel(&mut active_responses, &mut mux_in);
                     }
                 }
@@ -230,7 +263,9 @@ fn serve_request_stream<Ctx: Clone>(
                 kind: ErrorKind::InternalError,
             },
         })
-        .chain(stream::once(future::ready(Outgoing::Complete { request_id: req_id })))
+        .chain(stream::once(future::ready(Outgoing::Complete {
+            request_id: req_id,
+        })))
         .map(|env| Ok(Message::text(serde_json::to_string(&env).unwrap())))
 }
 
@@ -273,11 +308,13 @@ fn serve_error(
 
     let raw_msg = Message::text(serde_json::to_string_pretty(&msg).unwrap());
 
-    stream::once(future::ok(Ok(raw_msg))).forward(output).map(|result| {
-        if result.is_err() {
-            error!("Could not send Error message");
-        };
-    })
+    stream::once(future::ok(Ok(raw_msg)))
+        .forward(output)
+        .map(|result| {
+            if result.is_err() {
+                error!("Could not send Error message");
+            };
+        })
 }
 
 #[cfg(test)]
@@ -340,7 +377,9 @@ mod tests {
                     })
                     .boxed()
                 }
-                Request::Size(data) => stream::once(future::ok(Response(data.len() as u64))).boxed(),
+                Request::Size(data) => {
+                    stream::once(future::ok(Response(data.len() as u64))).boxed()
+                }
                 Request::Ctx => stream::once(future::ok(Response(ctx))).boxed(),
                 Request::Fail(reason) => stream::once(future::err(reason)).boxed(),
                 Request::Panic => stream::poll_fn(|_| panic!("Test panic")).boxed(),
@@ -368,7 +407,8 @@ mod tests {
             request_id: ReqId(id),
             payload,
         });
-        let req_env_json = serde_json::to_string(&req_env).expect("Could not serialize request envelope");
+        let req_env_json =
+            serde_json::to_string(&req_env).expect("Could not serialize request envelope");
 
         sender
             .send_message(&OwnedMessage::Text(req_env_json))
@@ -381,8 +421,8 @@ mod tests {
             .filter_map(move |msg| {
                 let msg_ok = msg.expect("Expected message but got websocket error");
                 if let OwnedMessage::Text(raw_resp) = msg_ok {
-                    let resp_env: Outgoing =
-                        serde_json::from_str(&*raw_resp).expect("Could not deserialize response envelope");
+                    let resp_env: Outgoing = serde_json::from_str(&*raw_resp)
+                        .expect("Could not deserialize response envelope");
                     if resp_env.request_id().0 == id {
                         Some(resp_env)
                     } else {
@@ -402,7 +442,10 @@ mod tests {
             })
             .filter_map(|env| {
                 if let Outgoing::Next { payload, .. } = env {
-                    Some(serde_json::from_value::<Resp>(payload).expect("Could not deserialize response"))
+                    Some(
+                        serde_json::from_value::<Resp>(payload)
+                            .expect("Could not deserialize response"),
+                    )
                 } else {
                     None
                 }
@@ -429,7 +472,13 @@ mod tests {
 
         assert_eq!(
             test_client::<Request, Response>(addr, "test", 0, Request::Count(5)).0,
-            vec![Response(0), Response(1), Response(2), Response(3), Response(4)]
+            vec![
+                Response(0),
+                Response(1),
+                Response(2),
+                Response(3),
+                Response(4)
+            ]
         );
     }
 
@@ -468,7 +517,13 @@ mod tests {
                 let b = start_barrier.clone();
                 std::thread::spawn(move || {
                     b.wait();
-                    test_client::<Request, Response>(addr, "test", i as u64, Request::Count(request_cnt)).0
+                    test_client::<Request, Response>(
+                        addr,
+                        "test",
+                        i as u64,
+                        Request::Count(request_cnt),
+                    )
+                    .0
                 })
             })
             .collect();
@@ -483,7 +538,8 @@ mod tests {
     async fn report_wrong_endpoint() {
         let addr = start_test_service().await;
 
-        let (msgs, completion) = test_client::<Request, Response>(addr, "no_such_service", 49, Request::Count(5));
+        let (msgs, completion) =
+            test_client::<Request, Response>(addr, "no_such_service", 49, Request::Count(5));
 
         assert_eq!(msgs, vec![]);
 
@@ -529,8 +585,12 @@ mod tests {
     async fn report_service_error() {
         let addr = start_test_service().await;
 
-        let (msgs, completion) =
-            test_client::<Request, Response>(addr, "test", 49, Request::Fail("Test reason".to_string()));
+        let (msgs, completion) = test_client::<Request, Response>(
+            addr,
+            "test",
+            49,
+            Request::Fail("Test reason".to_string()),
+        );
 
         assert_eq!(msgs, vec![]);
 
