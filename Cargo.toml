@@ -1,11 +1,13 @@
 [package]
 name = "wsrpc"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Actyx AG"]
 edition = "2018"
 license = "MIT OR Apache-2.0"
 keywords = ["websocket", "rpc"]
 description = "WebSocket-based RPC server"
+readme = "README.md"
+repository = "https://github.com/Actyx/wsrpc"
 
 [dependencies]
 bytes = "1.0.1"

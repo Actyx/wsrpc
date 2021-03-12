@@ -1958,7 +1958,7 @@ dependencies = [
 
 [[package]]
 name = "wsrpc"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bytes 1.0.1",
  "futures 0.3.13",
