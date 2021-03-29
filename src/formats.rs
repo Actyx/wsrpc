@@ -38,9 +38,9 @@ pub struct RequestBody<'a> {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 #[serde(rename_all = "camelCase")]
-pub enum Outgoing {
+pub enum Outgoing<Resp: Serialize> {
     #[serde(rename_all = "camelCase")]
-    Next { request_id: ReqId, payload: Value },
+    Next { request_id: ReqId, payload: Resp },
     #[serde(rename_all = "camelCase")]
     Complete { request_id: ReqId },
     #[serde(rename_all = "camelCase")]
@@ -64,7 +64,7 @@ pub enum ErrorKind {
     },
 }
 
-impl Outgoing {
+impl<Resp: Serialize> Outgoing<Resp> {
     #[cfg(test)]
     pub fn request_id(&self) -> ReqId {
         match self {

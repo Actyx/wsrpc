@@ -38,7 +38,7 @@ const INTER_STREAM_FAIRNESS: u64 = 64;
 
 pub trait Service {
     type Req: DeserializeOwned;
-    type Resp: Serialize + 'static;
+    type Resp: Serialize + Send + 'static;
     type Error: Serialize + 'static;
     type Ctx: Clone;
 
@@ -48,7 +48,7 @@ pub trait Service {
         req: Self::Req,
     ) -> BoxStream<'static, Result<Self::Resp, Self::Error>>;
 
-    fn boxed(self) -> BoxedService<Self::Ctx>
+    fn boxed(self) -> BoxedService<Self::Resp, Self::Ctx>
     where
         Self: Send + Sized + Sync + 'static,
     {
@@ -56,20 +56,20 @@ pub trait Service {
     }
 }
 
-pub trait WebsocketService<Ctx: Clone> {
+pub trait WebsocketService<Resp: Serialize + 'static, Ctx: Clone> {
     fn serve_ws(
         &self,
         ctx: Ctx,
         raw_req: Value,
         service_id: &str,
-    ) -> BoxStream<'static, Result<Value, ErrorKind>>;
+    ) -> BoxStream<'static, Result<Resp, ErrorKind>>;
 }
 
-impl<Req, Resp, Ctx, S> WebsocketService<Ctx> for S
+impl<Req, Resp, Ctx, S> WebsocketService<Resp, Ctx> for S
 where
     S: Service<Req = Req, Resp = Resp, Ctx = Ctx>,
     Req: DeserializeOwned,
-    Resp: Serialize + 'static,
+    Resp: Serialize + Send + 'static,
     Ctx: Clone,
 {
     fn serve_ws(
@@ -77,7 +77,7 @@ where
         ctx: Ctx,
         raw_req: Value,
         service_id: &str,
-    ) -> BoxStream<'static, Result<Value, ErrorKind>> {
+    ) -> BoxStream<'static, Result<Resp, ErrorKind>> {
         trace!(
             "Serving raw request for service {}: {:?}",
             service_id,
@@ -86,16 +86,11 @@ where
         match serde_json::from_value(raw_req) {
             Ok(req) => self
                 .serve(ctx, req)
-                .map(|resp_result| {
-                    resp_result
-                        .map(|resp| {
-                            serde_json::to_value(&resp)
-                                .expect("Could not serialize service response")
-                        })
-                        .map_err(|err| ErrorKind::ServiceError {
-                            value: serde_json::to_value(&err)
-                                .expect("Could not serialize service error response"),
-                        })
+                .map(|res| {
+                    res.map_err(|err| ErrorKind::ServiceError {
+                        value: serde_json::to_value(&err)
+                            .expect("Could not serialize service error response"),
+                    })
                 })
                 .boxed(),
             Err(cause) => {
@@ -110,11 +105,11 @@ where
     }
 }
 
-pub type BoxedService<Ctx> = Box<dyn WebsocketService<Ctx> + Send + Sync>;
+pub type BoxedService<Resp, Ctx> = Box<dyn WebsocketService<Resp, Ctx> + Send + Sync>;
 
-pub async fn serve<Ctx: Clone + Send + 'static>(
+pub async fn serve<Resp: Serialize + Send + 'static, Ctx: Clone + Send + 'static>(
     ws: warp::ws::Ws,
-    services: Arc<BTreeMap<&'static str, BoxedService<Ctx>>>,
+    services: Arc<BTreeMap<&'static str, BoxedService<Resp, Ctx>>>,
     ctx: Ctx,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     // Set the max frame size to 64 MB (defaults to 16 MB which we have hit at CTA)
@@ -126,11 +121,10 @@ pub async fn serve<Ctx: Clone + Send + 'static>(
     // on_upgrade does not take in errors any longer
 }
 
-#[allow(clippy::cognitive_complexity)]
-fn client_connected<Ctx: Clone + Send + 'static>(
+fn client_connected<Resp: Serialize + Send + 'static, Ctx: Clone + Send + 'static>(
     ws: WebSocket,
     ctx: Ctx,
-    services: Arc<BTreeMap<&'static str, BoxedService<Ctx>>>,
+    services: Arc<BTreeMap<&'static str, BoxedService<Resp, Ctx>>>,
 ) -> impl Future<Output = Result<(), ()>> {
     let (ws_out, ws_in) = ws.split();
 
@@ -225,8 +219,6 @@ fn client_connected<Ctx: Clone + Send + 'static>(
         })
 }
 
-// Wtf, clippy?
-#[allow(clippy::cognitive_complexity)]
 fn cancel_response_stream(snd_cancel: oneshot::Sender<()>) {
     if snd_cancel.is_canceled() {
         trace!("Not trying to cancel response stream whose cancel rcv has already dropped")
@@ -250,44 +242,41 @@ fn cancel_response_streams_close_channel(
     mux_in.close_channel();
 }
 
-fn serve_request_stream<Ctx: Clone>(
-    srv: &BoxedService<Ctx>,
+fn serve_request_stream<Resp: Serialize + 'static, Ctx: Clone>(
+    srv: &BoxedService<Resp, Ctx>,
     ctx: Ctx,
     service_id: &str,
-    req_id: ReqId,
+    request_id: ReqId,
     payload: Value,
 ) -> impl Stream<Item = Result<Message, warp::Error>> {
     let resp_stream = srv
         .serve_ws(ctx, payload, service_id)
-        .map(move |payload_result| match payload_result {
+        .map(move |res| match res {
             Ok(payload) => Outgoing::Next {
-                request_id: req_id,
+                request_id,
                 payload,
             },
-            Err(kind) => Outgoing::Error {
-                request_id: req_id,
-                kind,
-            },
+            Err(kind) => Outgoing::Error { request_id, kind },
         });
 
     AssertUnwindSafe(resp_stream)
         .catch_unwind()
-        .map(move |msg_result| match msg_result {
+        .map(move |res| match res {
             Ok(msg) => msg,
             Err(_) => Outgoing::Error {
-                request_id: req_id,
+                request_id,
                 kind: ErrorKind::InternalError,
             },
         })
         .chain(stream::once(future::ready(Outgoing::Complete {
-            request_id: req_id,
+            request_id,
         })))
         .map(|env| Ok(Message::text(serde_json::to_string(&env).unwrap())))
 }
 
-fn serve_request<T: std::fmt::Debug, Ctx: Clone>(
+fn serve_request<T: std::fmt::Debug, Resp: Serialize + 'static, Ctx: Clone>(
     canceled: oneshot::Receiver<()>,
-    srv: &BoxedService<Ctx>,
+    srv: &BoxedService<Resp, Ctx>,
     ctx: Ctx,
     service_id: &str,
     req_id: ReqId,
@@ -317,7 +306,7 @@ fn serve_error(
     error_kind: ErrorKind,
     output: impl Sink<Result<Message, warp::Error>>,
 ) -> impl Future<Output = ()> {
-    let msg = Outgoing::Error {
+    let msg: Outgoing<()> = Outgoing::Error {
         request_id: req_id,
         kind: error_kind,
     };
@@ -361,7 +350,7 @@ mod tests {
         bad_field: String,
     }
 
-    #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
     struct Response(u64);
 
     struct TestService();
@@ -403,12 +392,38 @@ mod tests {
         }
     }
 
-    fn test_client<Req: Serialize, Resp: DeserializeOwned>(
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
+    struct Response2(u64);
+
+    struct TestService2();
+
+    impl TestService2 {
+        fn new() -> TestService2 {
+            TestService2()
+        }
+    }
+
+    impl Service for TestService2 {
+        type Req = String;
+        type Resp = String;
+        type Error = String;
+        type Ctx = ();
+
+        fn serve(
+            &self,
+            _ctx: (),
+            req: Self::Req,
+        ) -> BoxStream<'static, Result<Self::Resp, String>> {
+            stream::once(future::ok(req.chars().rev().collect::<String>())).boxed()
+        }
+    }
+
+    fn test_client<Req: Serialize, Resp: Serialize + DeserializeOwned + Clone>(
         addr: SocketAddr,
         endpoint: &str,
         id: u64,
         req: Req,
-    ) -> (Vec<Resp>, Outgoing) {
+    ) -> (Vec<Resp>, Outgoing<Resp>) {
         let addr = format!("ws://{}/test_ws", addr);
         let client = ClientBuilder::new(&*addr)
             .expect("Could not setup client")
@@ -430,14 +445,14 @@ mod tests {
             .send_message(&OwnedMessage::Text(req_env_json))
             .expect("Could not send request");
 
-        let mut completion: Option<Outgoing> = None;
+        let mut completion: Option<Outgoing<Resp>> = None;
 
         let msgs = receiver
             .incoming_messages()
             .filter_map(move |msg| {
                 let msg_ok = msg.expect("Expected message but got websocket error");
                 if let OwnedMessage::Text(raw_resp) = msg_ok {
-                    let resp_env: Outgoing = serde_json::from_str(&*raw_resp)
+                    let resp_env: Outgoing<Resp> = serde_json::from_str(&*raw_resp)
                         .expect("Could not deserialize response envelope");
                     if resp_env.request_id().0 == id {
                         Some(resp_env)
@@ -452,16 +467,13 @@ mod tests {
                 if let Outgoing::Next { .. } = env {
                     true
                 } else {
-                    completion = Some(env.clone());
+                    completion = Some(env.to_owned());
                     false
                 }
             })
             .filter_map(|env| {
                 if let Outgoing::Next { payload, .. } = env {
-                    Some(
-                        serde_json::from_value::<Resp>(payload)
-                            .expect("Could not deserialize response"),
-                    )
+                    Some(payload)
                 } else {
                     None
                 }
@@ -471,7 +483,10 @@ mod tests {
     }
 
     async fn start_test_service() -> SocketAddr {
-        let services = Arc::new(maplit::btreemap! {"test" => TestService::new().boxed()});
+        let services = Arc::new(maplit::btreemap! {
+          "test" => TestService::new().boxed(),
+          "test2" => TestService2::new().boxed(),
+        });
         let ws = warp::path("test_ws")
             .and(warp::ws())
             .and(warp::any().map(move || services.clone()))
