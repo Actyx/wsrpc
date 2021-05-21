@@ -67,16 +67,5 @@ pub enum ErrorKind {
     },
 }
 
-impl Outgoing {
-    #[cfg(test)]
-    pub fn request_id(&self) -> ReqId {
-        match self {
-            Outgoing::Next { request_id, .. } => *request_id,
-            Outgoing::Complete { request_id, .. } => *request_id,
-            Outgoing::Error { request_id, .. } => *request_id,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub struct ReqId(pub u64);
