@@ -24,7 +24,7 @@ use futures::{future, Future, Sink};
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::value::{RawValue, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
@@ -62,7 +62,7 @@ pub trait WebsocketService<Ctx: Clone> {
         ctx: Ctx,
         raw_req: Value,
         service_id: &str,
-    ) -> BoxStream<'static, Result<Value, ErrorKind>>;
+    ) -> BoxStream<'static, Result<Box<RawValue>, ErrorKind>>;
 }
 
 impl<Req, Resp, Ctx, S> WebsocketService<Ctx> for S
@@ -77,7 +77,7 @@ where
         ctx: Ctx,
         raw_req: Value,
         service_id: &str,
-    ) -> BoxStream<'static, Result<Value, ErrorKind>> {
+    ) -> BoxStream<'static, Result<Box<RawValue>, ErrorKind>> {
         trace!(
             "Serving raw request for service {}: {:?}",
             service_id,
@@ -89,7 +89,7 @@ where
                 .map(|resp_result| {
                     resp_result
                         .map(|resp| {
-                            serde_json::to_value(&resp)
+                            serde_json::value::to_raw_value(&resp)
                                 .expect("Could not serialize service response")
                         })
                         .map_err(|err| ErrorKind::ServiceError {

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 use serde::{Deserialize, Serialize};
-use serde_json::value::Value;
+use serde_json::value::{RawValue, Value};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -35,12 +35,15 @@ pub struct RequestBody<'a> {
     pub payload: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "camelCase")]
 pub enum Outgoing {
     #[serde(rename_all = "camelCase")]
-    Next { request_id: ReqId, payload: Value },
+    Next {
+        request_id: ReqId,
+        payload: Box<RawValue>,
+    },
     #[serde(rename_all = "camelCase")]
     Complete { request_id: ReqId },
     #[serde(rename_all = "camelCase")]
