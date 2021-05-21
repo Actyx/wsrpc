@@ -409,25 +409,22 @@ mod tests {
     #[serde(tag = "type")]
     #[serde(rename_all = "camelCase")]
     pub enum OutgoingAst {
-	#[serde(rename_all = "camelCase")]
-	Next {
-            request_id: ReqId,
-            payload: Value,
-	},
-	#[serde(rename_all = "camelCase")]
-	Complete { request_id: ReqId },
-	#[serde(rename_all = "camelCase")]
-	Error { request_id: ReqId, kind: ErrorKind },
+        #[serde(rename_all = "camelCase")]
+        Next { request_id: ReqId, payload: Value },
+        #[serde(rename_all = "camelCase")]
+        Complete { request_id: ReqId },
+        #[serde(rename_all = "camelCase")]
+        Error { request_id: ReqId, kind: ErrorKind },
     }
 
     impl OutgoingAst {
-	pub fn request_id(&self) -> ReqId {
+        pub fn request_id(&self) -> ReqId {
             match self {
-		OutgoingAst::Next { request_id, .. } => *request_id,
-		OutgoingAst::Complete { request_id, .. } => *request_id,
-		OutgoingAst::Error { request_id, .. } => *request_id,
+                OutgoingAst::Next { request_id, .. } => *request_id,
+                OutgoingAst::Complete { request_id, .. } => *request_id,
+                OutgoingAst::Error { request_id, .. } => *request_id,
             }
-	}
+        }
     }
 
     fn test_client<Req: Serialize, Resp: DeserializeOwned>(
