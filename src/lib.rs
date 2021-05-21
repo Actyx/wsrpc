@@ -403,12 +403,39 @@ mod tests {
         }
     }
 
+    // Copy of Outgoing that uses Value over Box<RawValue>
+    // Needed due to https://github.com/serde-rs/json/issues/779
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+    #[serde(tag = "type")]
+    #[serde(rename_all = "camelCase")]
+    pub enum OutgoingAst {
+	#[serde(rename_all = "camelCase")]
+	Next {
+            request_id: ReqId,
+            payload: Value,
+	},
+	#[serde(rename_all = "camelCase")]
+	Complete { request_id: ReqId },
+	#[serde(rename_all = "camelCase")]
+	Error { request_id: ReqId, kind: ErrorKind },
+    }
+
+    impl OutgoingAst {
+	pub fn request_id(&self) -> ReqId {
+            match self {
+		OutgoingAst::Next { request_id, .. } => *request_id,
+		OutgoingAst::Complete { request_id, .. } => *request_id,
+		OutgoingAst::Error { request_id, .. } => *request_id,
+            }
+	}
+    }
+
     fn test_client<Req: Serialize, Resp: DeserializeOwned>(
         addr: SocketAddr,
         endpoint: &str,
         id: u64,
         req: Req,
-    ) -> (Vec<Resp>, Outgoing) {
+    ) -> (Vec<Resp>, OutgoingAst) {
         let addr = format!("ws://{}/test_ws", addr);
         let client = ClientBuilder::new(&*addr)
             .expect("Could not setup client")
@@ -430,14 +457,14 @@ mod tests {
             .send_message(&OwnedMessage::Text(req_env_json))
             .expect("Could not send request");
 
-        let mut completion: Option<Outgoing> = None;
+        let mut completion: Option<OutgoingAst> = None;
 
         let msgs = receiver
             .incoming_messages()
             .filter_map(move |msg| {
                 let msg_ok = msg.expect("Expected message but got websocket error");
                 if let OwnedMessage::Text(raw_resp) = msg_ok {
-                    let resp_env: Outgoing = serde_json::from_str(&*raw_resp)
+                    let resp_env: OutgoingAst = serde_json::from_str(&*raw_resp)
                         .expect("Could not deserialize response envelope");
                     if resp_env.request_id().0 == id {
                         Some(resp_env)
@@ -449,7 +476,7 @@ mod tests {
                 }
             })
             .take_while(|env| {
-                if let Outgoing::Next { .. } = env {
+                if let OutgoingAst::Next { .. } = env {
                     true
                 } else {
                     completion = Some(env.clone());
@@ -457,7 +484,7 @@ mod tests {
                 }
             })
             .filter_map(|env| {
-                if let Outgoing::Next { payload, .. } = env {
+                if let OutgoingAst::Next { payload, .. } = env {
                     Some(
                         serde_json::from_value::<Resp>(payload)
                             .expect("Could not deserialize response"),
@@ -561,7 +588,7 @@ mod tests {
 
         assert_eq!(
             completion,
-            Outgoing::Error {
+            OutgoingAst::Error {
                 request_id: ReqId(49),
                 kind: ErrorKind::UnknownEndpoint {
                     endpoint: "no_such_service".to_string(),
@@ -586,7 +613,7 @@ mod tests {
 
         assert_eq!(msgs, vec![]);
 
-        if let Outgoing::Error {
+        if let OutgoingAst::Error {
             request_id: ReqId(49),
             kind: ErrorKind::BadRequest { message },
         } = completion
@@ -612,7 +639,7 @@ mod tests {
 
         assert_eq!(
             completion,
-            Outgoing::Error {
+            OutgoingAst::Error {
                 request_id: ReqId(49),
                 kind: ErrorKind::ServiceError {
                     value: Value::String("Test reason".to_string())
@@ -631,7 +658,7 @@ mod tests {
 
         assert_eq!(
             completion,
-            Outgoing::Error {
+            OutgoingAst::Error {
                 request_id: ReqId(49),
                 kind: ErrorKind::InternalError,
             }
