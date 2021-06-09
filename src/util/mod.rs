@@ -13,10 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+mod take_until_condition;
 mod take_until_signaled;
 mod yield_after;
 
 use futures::{Future, Stream};
+use take_until_condition::TakeUntilCondition;
 use take_until_signaled::TakeUntilSignaled;
 use yield_after::YieldAfter;
 
@@ -27,6 +29,15 @@ pub trait UtilStreamExt: Stream + Sized {
         F: Future,
     {
         TakeUntilSignaled::new(self, f)
+    }
+
+    /// Take from this stream up to and including the element on which the predicate turns true.
+    fn take_until_condition<Fut, F>(self, f: F) -> TakeUntilCondition<Self, Fut, F>
+    where
+        F: FnMut(&Self::Item) -> Fut,
+        Fut: Future<Output = bool>,
+    {
+        TakeUntilCondition::new(self, f)
     }
 
     /// Creates a new stream that will resubmit its `Task` after a certain number
