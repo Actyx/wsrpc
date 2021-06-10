@@ -42,7 +42,7 @@ pub enum Outgoing {
     #[serde(rename_all = "camelCase")]
     Next {
         request_id: ReqId,
-        payload: Box<RawValue>,
+        payload: Vec<Box<RawValue>>,
     },
     #[serde(rename_all = "camelCase")]
     Complete { request_id: ReqId },

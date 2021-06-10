@@ -259,15 +259,31 @@ fn serve_request_stream<Ctx: Clone>(
 ) -> impl Stream<Item = Result<Message, warp::Error>> {
     let resp_stream = srv
         .serve_ws(ctx, payload, service_id)
-        .map(move |payload_result| match payload_result {
-            Ok(payload) => Outgoing::Next {
-                request_id: req_id,
-                payload,
-            },
-            Err(kind) => Outgoing::Error {
-                request_id: req_id,
-                kind,
-            },
+        .take_until_condition(|resp| future::ready(resp.is_err()))
+        .ready_chunks(128)
+        .flat_map(move |payload_results| {
+            let mut err = None;
+            let mut payload = Vec::with_capacity(payload_results.len());
+            for payload_result in payload_results {
+                match payload_result {
+                    Ok(value) => payload.push(value),
+                    Err(kind) => err = Some(kind), // always comes last
+                }
+            }
+            let mut res = Vec::with_capacity(1);
+            if !payload.is_empty() {
+                res.push(Outgoing::Next {
+                    request_id: req_id,
+                    payload,
+                });
+            }
+            if let Some(kind) = err {
+                res.push(Outgoing::Error {
+                    request_id: req_id,
+                    kind,
+                });
+            }
+            stream::iter(res)
         });
 
     AssertUnwindSafe(resp_stream)
@@ -410,7 +426,10 @@ mod tests {
     #[serde(rename_all = "camelCase")]
     pub enum OutgoingAst {
         #[serde(rename_all = "camelCase")]
-        Next { request_id: ReqId, payload: Value },
+        Next {
+            request_id: ReqId,
+            payload: Vec<Value>,
+        },
         #[serde(rename_all = "camelCase")]
         Complete { request_id: ReqId },
         #[serde(rename_all = "camelCase")]
@@ -480,14 +499,17 @@ mod tests {
                     false
                 }
             })
-            .filter_map(|env| {
+            .flat_map(|env| {
                 if let OutgoingAst::Next { payload, .. } = env {
-                    Some(
-                        serde_json::from_value::<Resp>(payload)
-                            .expect("Could not deserialize response"),
-                    )
+                    payload
+                        .into_iter()
+                        .map(|p| {
+                            serde_json::from_value::<Resp>(p)
+                                .expect("Could not deserialize response")
+                        })
+                        .collect()
                 } else {
-                    None
+                    vec![]
                 }
             })
             .collect();
