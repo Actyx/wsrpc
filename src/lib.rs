@@ -28,7 +28,6 @@ use serde_json::value::{RawValue, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
-use tracing::*;
 use util::UtilStreamExt;
 use warp::filters::ws::{Message, WebSocket};
 
@@ -78,7 +77,7 @@ where
         raw_req: Value,
         service_id: &str,
     ) -> BoxStream<'static, Result<Box<RawValue>, ErrorKind>> {
-        trace!(
+        tracing::trace!(
             "Serving raw request for service {}: {:?}",
             service_id,
             raw_req
@@ -100,9 +99,10 @@ where
                 .boxed(),
             Err(cause) => {
                 let message = format!("{}", cause);
-                warn!(
+                tracing::warn!(
                     "Error deserializing request for service {}: {}",
-                    service_id, message
+                    service_id,
+                    message
                 );
                 stream::once(future::err(ErrorKind::BadRequest { message })).boxed()
             }
@@ -189,7 +189,7 @@ fn client_connected<Ctx: Clone + Send + 'static>(
                                     },
                                     mux_in.clone(),
                                 ));
-                                warn!(
+                                tracing::warn!(
                                     "Client tried to access unknown service: {}",
                                     body.service_id
                                 );
@@ -202,9 +202,10 @@ fn client_connected<Ctx: Clone + Send + 'static>(
                         }
                     },
                     Err(cause) => {
-                        error!(
+                        tracing::warn!(
                             "Could not deserialize client request {}: {}",
-                            text_msg, cause
+                            text_msg,
+                            cause
                         );
                         cancel_response_streams_close_channel(&mut active_responses, &mut mux_in);
                     }
@@ -212,16 +213,16 @@ fn client_connected<Ctx: Clone + Send + 'static>(
             } else if raw_msg.is_ping() {
                 // No way to send pong??
             } else if raw_msg.is_close() {
-                info!("Closing websocket connection (client disconnected)");
+                tracing::debug!("Closing websocket connection (client disconnected)");
                 cancel_response_streams_close_channel(&mut active_responses, &mut mux_in);
             } else {
-                error!("Expected TEXT Websocket message but got binary");
+                tracing::warn!("Expected TEXT Websocket message but got binary");
                 cancel_response_streams_close_channel(&mut active_responses, &mut mux_in);
             };
             future::ok(())
         })
         .map_err(|err| {
-            error!("Websocket closed with error {}", err);
+            tracing::info!("Websocket closed with error {}", err);
         })
 }
 
@@ -229,13 +230,13 @@ fn client_connected<Ctx: Clone + Send + 'static>(
 #[allow(clippy::cognitive_complexity)]
 fn cancel_response_stream(snd_cancel: oneshot::Sender<()>) {
     if snd_cancel.is_canceled() {
-        trace!("Not trying to cancel response stream whose cancel rcv has already dropped")
+        tracing::trace!("Not trying to cancel response stream whose cancel rcv has already dropped")
     } else {
         // Let it be said that we could just as well just drop the Sender here,
         // which would also signal the Receiver (with a 'Cancel' error).
         match snd_cancel.send(()) {
-            Ok(_) => debug!("Merged Cancel signal into ongoing response stream"),
-            Err(_) => debug!("Response stream we are trying to stop has already stopped"),
+            Ok(_) => tracing::debug!("Merged Cancel signal into ongoing response stream"),
+            Err(_) => tracing::debug!("Response stream we are trying to stop has already stopped"),
         }
     }
 }
@@ -318,21 +319,22 @@ fn serve_request<T: std::fmt::Debug, Ctx: Clone>(
             Ok(item)
         });
 
+    let service_id = service_id.to_owned();
     response_stream
         .yield_after(INTER_STREAM_FAIRNESS)
         .forward(output)
-        .map(|result| {
+        .map(move |result| {
             if let Err(cause) = result {
-                error!("Multiplexing error {:?}", cause);
+                tracing::warn!(%service_id, "Multiplexing error {:?}", cause);
             };
         })
 }
 
-fn serve_error(
-    req_id: ReqId,
-    error_kind: ErrorKind,
-    output: impl Sink<Result<Message, warp::Error>>,
-) -> impl Future<Output = ()> {
+fn serve_error<S>(req_id: ReqId, error_kind: ErrorKind, output: S) -> impl Future<Output = ()>
+where
+    S: Sink<Result<Message, warp::Error>>,
+    S::Error: std::fmt::Debug,
+{
     let msg = Outgoing::Error {
         request_id: req_id,
         kind: error_kind,
@@ -343,8 +345,8 @@ fn serve_error(
     stream::once(future::ok(Ok(raw_msg)))
         .forward(output)
         .map(|result| {
-            if result.is_err() {
-                error!("Could not send Error message");
+            if let Err(err) = result {
+                tracing::warn!("Could not send Error message: {:?}", err);
             };
         })
 }
